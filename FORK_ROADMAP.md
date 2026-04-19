@@ -25,7 +25,7 @@ milestone.
 | Milestone | Scope | Status |
 |-----------|-------|--------|
 | M1 | Content Work Products + Versions core | **shipped** |
-| M2 | Knowledge Base + Context Packs | planned |
+| M2 | Knowledge Base + Context Packs | **shipped** |
 | M3 | Live Run SSE tail (slice of observability) | planned |
 | M4 | Content Templates (reusable per type) | planned |
 | M5 | Publishing Targets + Attempts | planned |
@@ -200,48 +200,130 @@ Design tradeoffs:
   it will land alongside M2 (Knowledge Base) where skill surface is
   densest. Agents can call the HTTP API directly today.
 
+### 3. Knowledge Base + Context Packs (M2, shipped)
+
+Problem: The novel factory's single biggest failure mode is *canon
+drift* — chapter 12 forgets a character's voice, uses a location
+from a retired draft, or contradicts a timeline event. The
+course factory's failure mode is tone drift — section 5 stops
+sounding like Neuroxcel. Both need durable reference material and
+a deterministic way to inject the right subset into every agent
+run.
+
+Shipped:
+
+- Migration `0059_fork_knowledge_bases` adds two tables:
+  - `knowledge_base_documents` — path-addressed Markdown bodies
+    with typed `kind`, `tags[]`, and `frontmatter` (Record). Scope
+    is `(company_id, project_id)`; `project_id NULL` is
+    company-scope (brand voice, legal boilerplate). Two partial
+    unique indexes enforce "one doc per path per scope" correctly
+    under Postgres null semantics.
+  - `context_packs` — named bundles with `rules` jsonb
+    (`includePaths`, `includeTagsAny`, `includeKinds`, `maxDocs`).
+    Packs are *definitions*; resolving them runs the query.
+- Shared types + validators:
+  `KnowledgeBaseDocument`, `ContextPack`, `ContextPackRules`,
+  `ContextPackResolution`. `knowledgeBaseDocumentPathSchema`
+  blocks absolute paths, `..` traversal, backslashes, and weird
+  characters; `contextPackNameSchema` enforces kebab-case;
+  `contextPackRulesSchema` rejects non-positive `maxDocs`.
+- Services:
+  - `knowledgeBaseService`: list (filter by project/kind/tag/
+    path-prefix), CRUD, **upsert-by-path** (idempotent), and the
+    **resolution engine** that turns pack rules into a deduped doc
+    list. Resolution supports overlap between project-scope and
+    company-scope, with project-scope winning on duplicate paths
+    (important for overriding company brand voice per series).
+  - `contextPackService`: CRUD plus `resolve(packId, overrideRules)`
+    that merges override rules into stored rules, and a no-save
+    `resolveAdHoc(projectId, rules)` for agents previewing
+    bundles.
+- REST API (agents are the primary callers, board operators get
+  the same endpoints):
+    GET    /api/companies/:id/knowledge-base-documents
+    POST   /api/companies/:id/knowledge-base-documents
+    PUT    /api/companies/:id/knowledge-base-documents/by-path
+    GET    /api/knowledge-base-documents/:id
+    PATCH  /api/knowledge-base-documents/:id
+    DELETE /api/knowledge-base-documents/:id
+    GET    /api/companies/:id/context-packs
+    POST   /api/companies/:id/context-packs
+    POST   /api/companies/:id/context-packs/preview
+    GET    /api/context-packs/:id
+    PATCH  /api/context-packs/:id
+    DELETE /api/context-packs/:id
+    POST   /api/context-packs/:id/resolve
+- Skill: new reference
+  `skills/paperclip/references/content-factory.md` (180+ lines)
+  documenting Content Work Products, KB, and Context Packs,
+  including recommended factory loops (novel chapter write,
+  PDF course section). SKILL.md points agents at it whenever they
+  are working in a content factory — so both Hermes, Claude Code,
+  and OpenClaw see the same instructions.
+- Tests: 17 validator, 14 route (mocked service, 31/31 local
+  pass), 10 embedded-pg service tests covering path uniqueness
+  across scopes, upsert idempotency, rule resolution
+  (path/tag/kind union, project-over-company shadowing, maxDocs
+  capping, ad-hoc resolution, cross-tenant isolation).
+
+Design tradeoffs:
+
+- **Deterministic rules over semantic RAG.** A v1 pack uses explicit
+  path/tag/kind rules so every "chapter 12 write" run sees the same
+  canon. Semantic retrieval can be added later as another rule type
+  without breaking existing packs.
+- **Project-over-company shadowing at resolve time**, not at write
+  time. Agents can author "brand voice (company)" and override with
+  "brand voice (project)" for a specific series without deleting
+  the company doc.
+- **No KB document versioning** in M2. The body is mutable — changes
+  are tracked via the activity log. If continuity diffs become a
+  hot path, we can upgrade to row-versioning like
+  `content_work_product_versions` without breaking the API.
+- **Kept prompt auto-hydration out of scope.** The adapters would
+  need per-runtime integration (seven adapters × config surface), so
+  for M2 agents explicitly call `POST /context-packs/:id/resolve`
+  from inside a run. Auto-hydration is a natural M3.5 follow-up.
+- **Tag matching uses Postgres `jsonb ?|` operator** with a text[]
+  RHS. Fast on small arrays; if tags grow into the thousands we can
+  add a GIN index without schema-shape changes.
+
 ## What Should Be Done Next
 
 Content-factory milestones come first (they unlock the Neuroxcel
 workflows); deployment-hardening follow-ups continue in parallel.
 
-1. **M2 — Knowledge Base + Context Packs**
-   - New tables `knowledge_bases` (per project, Markdown documents with
-     frontmatter) and `context_packs` (named queries → resolved document
-     bundles).
-   - Adapter skills: `paperclip/knowledge-base get|put|list|search` and
-     `paperclip/context-pack resolve`.
-   - Agent prompt hydration: when a run targets a work product, the
-     referenced context pack is auto-injected as a reference section.
-   - Adapter skill for `paperclip/work-product create|update|finalize`
-     lands here alongside the KB skills (unified rollout).
-
-2. **M3 — Live Run SSE tail**
+1. **M3 — Live Run SSE tail + prompt auto-hydration**
    - `GET /api/heartbeat-runs/:id/stream` — Server-Sent Events tail of
      structured run events (stdout, tool calls, usage).
    - Board UI panel on a content work product showing the live run that
      produced the current draft.
    - `paperclipai run --tail` in the CLI.
+   - **Auto-hydration:** when an agent's config references a context
+     pack, the pack is resolved and inlined into the agent's prompt at
+     wake time. This is the payoff of M2's deterministic rule system —
+     every writer sees the same canon without explicit API calls.
 
-3. **M4 — Content Templates**
+2. **M4 — Content Templates**
    - Company-scoped templates bundling outline + section prompts + pass
      criteria for a content type. "PDF course" and "Novel chapter" stop
      being reinvented per project.
    - Export/import via the existing `companies.sh` portability layer.
 
-4. **M5 — Publishing Targets + Attempts**
+3. **M5 — Publishing Targets + Attempts**
    - Configurable destinations (Gumroad, Substack, R2, GitHub, your
      CMS), credentials via existing company secrets.
    - Idempotent `POST /api/content-work-products/:id/publish-to/:targetId`
      with audit log.
 
-5. **M6 — Vertical polish**
+4. **M6 — Vertical polish**
    - Novel factory: continuity-check as a required review gate before
      `draft → in_review`; Bible-update workflow where lore-keeper
      proposes canon additions.
    - Course factory: wire cost service → per-product margin tracking.
 
-6. **Ongoing — deployment hardening follow-ups**
+5. **Ongoing — deployment hardening follow-ups**
    - Secret master-key rotation + per-agent/per-routine secret scoping.
    - `/metrics` Prometheus exposition + Grafana dashboard.
    - Rate limiter on `/api/auth`, invite creation, board claim.
@@ -269,17 +351,25 @@ workflows); deployment-hardening follow-ups continue in parallel.
   `doc/DEPLOYMENT-MODES.md` — all additions at the bottom. Merge risk:
   low.
 - `packages/db/src/migrations/0058_fork_content_work_products.sql` and
-  the matching journal entry — **medium risk**. If upstream ships a
-  new `0058`, rename to the next free slot and move the journal entry.
-  The tag contains `fork_` so the conflict is obvious in a diff.
-- `packages/db/src/schema/{index,content_work_products}.ts` — new
-  schema file + single-line index add. Merge risk: trivial.
-- `packages/shared/src/{index,types/index,validators/index}.ts` —
-  additive-only exports for `ContentWorkProduct*` types/validators.
+  `0059_fork_knowledge_bases.sql` with matching journal entries —
+  **medium risk**. If upstream ships a new `0058` or `0059`, rename to
+  the next free slot and move the journal entry. The tags contain
+  `fork_` so the conflict is obvious in a diff.
+- `packages/db/src/schema/{content_work_products,knowledge_base}.ts` —
+  new schema files; `schema/index.ts` gets two additive export lines.
   Merge risk: trivial.
+- `packages/shared/src/{index,types/index,validators/index}.ts` —
+  additive-only exports for `ContentWorkProduct*` and
+  `KnowledgeBase*` / `ContextPack*` types/validators. Merge risk:
+  trivial.
 - `server/src/services/index.ts`, `server/src/routes/index.ts`,
-  `server/src/app.ts` — each adds a single import + one mount/export
-  line for the content work products routes. Merge risk: trivial.
+  `server/src/app.ts` — each adds additive import + mount lines for
+  content-work-products and knowledge-base routes. Merge risk: trivial.
+- `skills/paperclip/SKILL.md` + new
+  `skills/paperclip/references/content-factory.md`. SKILL.md adds one
+  paragraph pointing at the new reference; the reference is fully new.
+  Merge risk: low, but SKILL.md is a frequently-touched upstream file
+  so prefer stanza-level re-application over whole-file overwrite.
 - New files (`deployment-readiness.ts`, new tests) will not conflict with
   upstream by construction.
 

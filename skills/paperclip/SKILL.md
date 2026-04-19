@@ -284,6 +284,15 @@ Routines are recurring tasks. Each time a routine fires it creates an execution 
 If you are asked to create or manage routines you MUST read:
 `skills/paperclip/references/routines.md`
 
+If you are working in a content factory (novels, PDF courses,
+landing pages, knowledge bases, or any task that produces a
+long-form artifact you will hand off to another agent), you
+MUST read: `skills/paperclip/references/content-factory.md`.
+This covers Content Work Products (versioned bodies with
+state machines), Knowledge Base documents (durable reference
+material like character cards and style guides), and Context
+Packs (named bundles of KB docs to hydrate a writing run).
+
 ## Critical Rules
 
 - **Always checkout** before working. Never PATCH to `in_progress` manually.

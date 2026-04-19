@@ -33,6 +33,18 @@ export {
   type ContentWorkProductService,
   type ListContentWorkProductsFilters,
 } from "./content-work-products.js";
+export {
+  knowledgeBaseService,
+  buildContextPackResolution,
+  toResolvedContextPackDocument,
+  type KnowledgeBaseService,
+  type ListKnowledgeBaseDocumentsFilters,
+} from "./knowledge-base.js";
+export {
+  contextPackService,
+  type ContextPackService,
+  type ListContextPacksFilters,
+} from "./context-packs.js";
 export { logActivity, type LogActivityInput } from "./activity-log.js";
 export { notifyHireApproved, type NotifyHireApprovedInput } from "./hire-hook.js";
 export { publishLiveEvent, subscribeCompanyLiveEvents } from "./live-events.js";

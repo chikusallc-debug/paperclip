@@ -19,6 +19,7 @@ All environment variables that Paperclip uses for server configuration.
 | `PAPERCLIP_DEPLOYMENT_MODE` | `local_trusted` | Runtime mode override |
 | `PAPERCLIP_DEPLOYMENT_EXPOSURE` | `private` | Exposure policy when deployment mode is `authenticated` |
 | `PAPERCLIP_API_URL` | (auto-derived) | Paperclip API base URL. When set externally (e.g., via Kubernetes ConfigMap, load balancer, or reverse proxy), the server preserves the value instead of deriving it from the listen host and port. Useful for deployments where the public-facing URL differs from the local bind address. |
+| `PAPERCLIP_STRICT_STARTUP_CHECKS` | `false` | When `true`, refuse to start if any `/api/health/ready` check returns `fail` (for example: weak `BETTER_AUTH_SECRET`, unwritable storage dir, missing `publicBaseUrl` in authenticated/public). Recommended for production. |
 
 ## Secrets
 

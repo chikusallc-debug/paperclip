@@ -143,3 +143,24 @@ This prevents lockout when a user migrates from long-running local trusted usage
 - V1 contract: `doc/SPEC-implementation.md`
 - operator workflows: `doc/DEVELOPING.md` and `doc/CLI.md`
 - invite/join state map: `doc/spec/invite-flow.md`
+
+## 11. Runtime Readiness Probes
+
+Paperclip exposes three HTTP probes for operators:
+
+| Path                 | Purpose                      |
+|----------------------|------------------------------|
+| `/api/health/live`   | Liveness (no DB touch)       |
+| `/api/health`        | Overall health + bootstrap   |
+| `/api/health/ready`  | Structured readiness report  |
+
+`/api/health/ready` runs deployment-aware checks (secrets provider, auth
+secret strength, storage writability, backup config, public URL sanity, bind
+safety) and returns `503` when any hard check fails. In `authenticated` mode,
+anonymous callers see a redacted form that preserves `overall` status but
+omits paths and hostnames. See `docs/deploy/deployment-modes.md` for the
+response shape.
+
+`PAPERCLIP_STRICT_STARTUP_CHECKS=true` causes the server to refuse to start
+on any hard failure, so misconfiguration surfaces at deploy time instead of
+as partial runtime failures.

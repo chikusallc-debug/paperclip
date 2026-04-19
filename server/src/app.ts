@@ -34,6 +34,7 @@ import { assetRoutes } from "./routes/assets.js";
 import { accessRoutes } from "./routes/access.js";
 import { pluginRoutes } from "./routes/plugins.js";
 import { adapterRoutes } from "./routes/adapters.js";
+import { contentWorkProductRoutes } from "./routes/content-work-products.js";
 import { pluginUiStaticRoutes } from "./routes/plugin-ui-static.js";
 import { applyUiBranding } from "./ui-branding.js";
 import { logger } from "./middleware/logger.js";
@@ -197,6 +198,7 @@ export async function createApp(
   api.use(goalRoutes(db));
   api.use(approvalRoutes(db));
   api.use(secretRoutes(db));
+  api.use(contentWorkProductRoutes(db));
   api.use(costRoutes(db));
   api.use(activityRoutes(db));
   api.use(dashboardRoutes(db));

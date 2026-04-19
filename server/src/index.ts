@@ -521,6 +521,19 @@ export async function startServer(): Promise<StartedServer> {
   const feedback = feedbackService(db as any, {
     shareClient: createFeedbackTraceShareClientFromConfig(config),
   });
+  const readinessInput = {
+    bindHost: config.host,
+    allowedHostnames: config.allowedHostnames,
+    authPublicBaseUrl: config.authPublicBaseUrl,
+    secretsProvider: config.secretsProvider,
+    secretsMasterKeyFilePath: config.secretsMasterKeyFilePath,
+    storageProvider: config.storageProvider,
+    storageLocalDiskBaseDir: config.storageLocalDiskBaseDir,
+    storageS3Bucket: config.storageS3Bucket,
+    databaseBackupEnabled: config.databaseBackupEnabled,
+    databaseBackupDir: config.databaseBackupDir,
+  };
+
   const app = await createApp(db as any, {
     uiMode,
     serverPort: listenPort,
@@ -534,6 +547,7 @@ export async function startServer(): Promise<StartedServer> {
     companyDeletionEnabled: config.companyDeletionEnabled,
     betterAuthHandler,
     resolveSession,
+    readinessInput,
   });
   const server = createServer(app as unknown as Parameters<typeof createServer>[0]);
 
@@ -700,6 +714,33 @@ export async function startServer(): Promise<StartedServer> {
   // reject valid external adapter types during the startup loading window.
   const { waitForExternalAdapters } = await import("./adapters/registry.js");
   await waitForExternalAdapters();
+
+  // Startup preflight: run the same deployment readiness checks that
+  // /api/health/ready exposes, and log the result. When PAPERCLIP_STRICT_STARTUP_CHECKS
+  // is true we refuse to start on any hard failure so production deployments
+  // surface misconfiguration at boot instead of serving broken traffic.
+  {
+    const { runDeploymentReadiness } = await import("./services/deployment-readiness.js");
+    const report = await runDeploymentReadiness(db as any, {
+      deploymentMode: config.deploymentMode,
+      deploymentExposure: config.deploymentExposure,
+      authReady,
+      ...readinessInput,
+    });
+    const failed = report.checks.filter((c) => c.status === "fail");
+    const warned = report.checks.filter((c) => c.status === "warn");
+    const logLevel = failed.length > 0 ? "error" : warned.length > 0 ? "warn" : "info";
+    logger[logLevel](
+      { readiness: report },
+      `Deployment readiness: ${report.overall} (${failed.length} failed, ${warned.length} warned, ${report.checks.length} total)`,
+    );
+    if (failed.length > 0 && process.env.PAPERCLIP_STRICT_STARTUP_CHECKS === "true") {
+      const summary = failed.map((c) => `${c.name}: ${c.message}`).join("; ");
+      throw new Error(
+        `PAPERCLIP_STRICT_STARTUP_CHECKS=true refusing to start with failed readiness checks — ${summary}`,
+      );
+    }
+  }
 
   await new Promise<void>((resolveListen, rejectListen) => {
     const onError = (err: Error) => {

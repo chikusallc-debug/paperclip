@@ -10,6 +10,7 @@ import { actorMiddleware } from "./middleware/auth.js";
 import { boardMutationGuard } from "./middleware/board-mutation-guard.js";
 import { privateHostnameGuard, resolvePrivateHostnameAllowSet } from "./middleware/private-hostname-guard.js";
 import { healthRoutes } from "./routes/health.js";
+import type { DeploymentReadinessInput } from "./services/deployment-readiness.js";
 import { companyRoutes } from "./routes/companies.js";
 import { companySkillRoutes } from "./routes/company-skills.js";
 import { agentRoutes } from "./routes/agents.js";
@@ -123,6 +124,14 @@ export async function createApp(
     localPluginDir?: string;
     betterAuthHandler?: express.RequestHandler;
     resolveSession?: (req: ExpressRequest) => Promise<BetterAuthSessionResult | null>;
+    /**
+     * Runtime snapshot passed to /health/ready. Optional so tests can mount
+     * the app without wiring the full deployment environment.
+     */
+    readinessInput?: Omit<
+      DeploymentReadinessInput,
+      "deploymentMode" | "deploymentExposure" | "authReady"
+    >;
   },
 ) {
   const app = express();
@@ -172,6 +181,7 @@ export async function createApp(
       deploymentExposure: opts.deploymentExposure,
       authReady: opts.authReady,
       companyDeletionEnabled: opts.companyDeletionEnabled,
+      readinessInput: opts.readinessInput,
     }),
   );
   api.use("/companies", companyRoutes(db, opts.storageService));

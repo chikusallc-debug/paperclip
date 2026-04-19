@@ -414,6 +414,13 @@
       "when": 1776499200000,
       "tag": "0058_fork_content_work_products",
       "breakpoints": true
+    },
+    {
+      "idx": 59,
+      "version": "7",
+      "when": 1776585600000,
+      "tag": "0059_fork_knowledge_bases",
+      "breakpoints": true
     }
   ]
 }

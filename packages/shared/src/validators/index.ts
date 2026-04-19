@@ -186,6 +186,27 @@ export {
 } from "./content-work-product.js";
 
 export {
+  createKnowledgeBaseDocumentSchema,
+  updateKnowledgeBaseDocumentSchema,
+  upsertKnowledgeBaseDocumentSchema,
+  knowledgeBaseDocumentPathSchema,
+  knowledgeBaseDocumentKindSchema,
+  knowledgeBaseDocumentFormatSchema,
+  createContextPackSchema,
+  updateContextPackSchema,
+  contextPackRulesSchema,
+  contextPackNameSchema,
+  resolveContextPackSchema,
+  type CreateKnowledgeBaseDocumentInput,
+  type UpdateKnowledgeBaseDocumentInput,
+  type UpsertKnowledgeBaseDocumentInput,
+  type CreateContextPackInput,
+  type UpdateContextPackInput,
+  type ContextPackRulesInput,
+  type ResolveContextPackInput,
+} from "./knowledge-base.js";
+
+export {
   executionWorkspaceConfigSchema,
   updateExecutionWorkspaceSchema,
   executionWorkspaceStatusSchema,

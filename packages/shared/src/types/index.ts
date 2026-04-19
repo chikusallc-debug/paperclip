@@ -109,6 +109,15 @@ export type {
   ContentWorkProductWithLatest,
 } from "./content-work-product.js";
 export type {
+  KnowledgeBaseDocument,
+  KnowledgeBaseDocumentKind,
+  KnowledgeBaseDocumentFormat,
+  ContextPack,
+  ContextPackRules,
+  ContextPackResolution,
+  ResolvedContextPackDocument,
+} from "./knowledge-base.js";
+export type {
   Issue,
   IssueAssigneeAdapterOverrides,
   IssueRelation,

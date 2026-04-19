@@ -100,6 +100,15 @@ export type {
   IssueWorkProductReviewState,
 } from "./work-product.js";
 export type {
+  ContentWorkProduct,
+  ContentWorkProductStatus,
+  ContentWorkProductKind,
+  ContentWorkProductFormat,
+  ContentWorkProductVersion,
+  ContentWorkProductVersionSummary,
+  ContentWorkProductWithLatest,
+} from "./content-work-product.js";
+export type {
   Issue,
   IssueAssigneeAdapterOverrides,
   IssueRelation,

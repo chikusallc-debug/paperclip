@@ -171,6 +171,21 @@ export {
 } from "./work-product.js";
 
 export {
+  createContentWorkProductSchema,
+  updateContentWorkProductSchema,
+  createContentWorkProductVersionSchema,
+  publishContentWorkProductSchema,
+  contentWorkProductKindSchema,
+  contentWorkProductStatusSchema,
+  contentWorkProductFormatSchema,
+  contentWorkProductSlugSchema,
+  type CreateContentWorkProductInput,
+  type UpdateContentWorkProductInput,
+  type CreateContentWorkProductVersionInput,
+  type PublishContentWorkProductInput,
+} from "./content-work-product.js";
+
+export {
   executionWorkspaceConfigSchema,
   updateExecutionWorkspaceSchema,
   executionWorkspaceStatusSchema,

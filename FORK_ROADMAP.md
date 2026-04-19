@@ -2,9 +2,10 @@
 
 This file tracks the state of this personal fork of
 [paperclipai/paperclip](https://github.com/paperclipai/paperclip) as it is
-shaped into a production-usable self-hosted agent control plane. It is kept
-separate from upstream `ROADMAP.md` (the project's public roadmap) so it can
-be updated freely without creating merge conflicts.
+shaped into a production-usable self-hosted agent control plane for the
+**Neuroxcel content empire** (PDF/course factory and novel-generation
+factory). It is kept separate from upstream `ROADMAP.md` so it can be
+updated freely without creating merge conflicts.
 
 ## Priorities
 
@@ -13,6 +14,22 @@ be updated freely without creating merge conflicts.
 3. Run observability and debugging
 4. Reusable routines and workflows
 5. Secret scoping and auditability
+
+## Neuroxcel Content Factory Plan
+
+Two verticals share a shared substrate of primitives (Work Products +
+Versions, Knowledge Base + Context Packs, Content Templates, Publishing
+Targets, Live Run Stream). See the implementation notes below for each
+milestone.
+
+| Milestone | Scope | Status |
+|-----------|-------|--------|
+| M1 | Content Work Products + Versions core | **shipped** |
+| M2 | Knowledge Base + Context Packs | planned |
+| M3 | Live Run SSE tail (slice of observability) | planned |
+| M4 | Content Templates (reusable per type) | planned |
+| M5 | Publishing Targets + Attempts | planned |
+| M6 | Vertical polish (continuity gate, pricing/margin) | planned |
 
 ## What I Found
 
@@ -124,39 +141,109 @@ Design tradeoffs:
   guessing entropy. Clear, predictable failures are better than false
   positives.
 
+### 2. Content Work Products + Versions core (M1, shipped)
+
+Problem: Paperclip already has `issue_work_products`, but it models
+*external artifact references* (PRs, deployments, preview URLs). For the
+Neuroxcel content factory, agents need to produce, revise, and hand off
+actual long-form content — novel chapters, PDF course sections, landing
+pages, series bibles — with durable versioning and a workflow-state
+machine.
+
+Shipped:
+
+- New DB tables in migration `0058_fork_content_work_products`:
+  - `content_work_products` (type, kind, title, slug, status, tags,
+    metadata, latest/published version pointers). Unique slug per
+    project so routines can target `chapter-12` deterministically.
+  - `content_work_product_versions` (monotonic version numbers,
+    immutable body, format, parent version pointer, author/run
+    attribution). `ON DELETE CASCADE` from the parent.
+- `packages/shared`: new types
+  (`ContentWorkProduct`, `ContentWorkProductVersion`,
+  `ContentWorkProductWithLatest`, etc.) and zod validators
+  (`createContentWorkProductSchema`,
+  `createContentWorkProductVersionSchema`,
+  `publishContentWorkProductSchema`, `updateContentWorkProductSchema`).
+  Statuses accept snake_case custom values so factory profiles can
+  extend without a migration (`continuity_passed`, `layout_ready`).
+- Server service
+  (`server/src/services/content-work-products.ts`): list/create/
+  get-with-latest/update/delete, list/create/get versions, publish.
+  Enforces company scope at every read and slug uniqueness per project.
+- REST API under
+  `/api/companies/:companyId/content-work-products` and
+  `/api/content-work-products/:id[/versions[/:versionNumber]][/publish]`.
+  Accepts both board and agent actors (agents are the primary writers in
+  content factories). Writes emit activity-log entries.
+- Tests: 12 service tests (embedded-pg, skip on unsupported hosts), 17
+  validator tests, 12 route tests with mocked service. 29 pass locally;
+  service tests run in CI with embedded-pg available.
+
+Design tradeoffs:
+
+- Kept the `issue_work_products` table untouched — both tables live
+  side-by-side since they model different things. No backfill, no
+  rename.
+- Accepting custom snake_case statuses keeps the state machine
+  extensible for novel-specific rituals (`continuity_passed`) and
+  course-specific rituals (`layout_ready`) without schema churn. Strict
+  enum can come later if we see drift.
+- Chose a high, forkable migration slot (`0058`) rather than a reserved
+  9xxx range. If upstream adds `0058`, the rebase is a simple rename +
+  journal re-entry; the tradeoff is lower collision risk vs. the
+  reserved-range approach (which inflates drizzle history forever).
+- Routes use runtime import for `resolveCompanyId` to keep the routes
+  file decoupled from service internals. Low overhead (one DB lookup
+  per single-resource request) and preserves the module boundary.
+- Did not ship the adapter skill for `paperclip/work-product` in M1 —
+  it will land alongside M2 (Knowledge Base) where skill surface is
+  densest. Agents can call the HTTP API directly today.
+
 ## What Should Be Done Next
 
-In order, still on this branch:
+Content-factory milestones come first (they unlock the Neuroxcel
+workflows); deployment-hardening follow-ups continue in parallel.
 
-1. **Secret rotation + scoping (priority 5)**
-   - Add a rotate-master-key tool that re-encrypts all
-     `company_secret_versions` under a new key, with a reversible dual-key
-     window.
-   - Introduce optional `agentId` / `routineId` scoping columns on
-     `company_secrets`; enforce at resolve time.
-   - Add a `/api/companies/:id/secrets/:name/reveal` audit log entry with
-     actor + reason.
+1. **M2 — Knowledge Base + Context Packs**
+   - New tables `knowledge_bases` (per project, Markdown documents with
+     frontmatter) and `context_packs` (named queries → resolved document
+     bundles).
+   - Adapter skills: `paperclip/knowledge-base get|put|list|search` and
+     `paperclip/context-pack resolve`.
+   - Agent prompt hydration: when a run targets a work product, the
+     referenced context pack is auto-injected as a reference section.
+   - Adapter skill for `paperclip/work-product create|update|finalize`
+     lands here alongside the KB skills (unified rollout).
 
-2. **Run observability (priority 3)**
+2. **M3 — Live Run SSE tail**
    - `GET /api/heartbeat-runs/:id/stream` — Server-Sent Events tail of
      structured run events (stdout, tool calls, usage).
-   - `GET /metrics` — Prometheus exposition for run counts by adapter,
-     heartbeat queue depth, cost window usage.
-   - Grafana dashboard JSON in `docker/grafana/`.
+   - Board UI panel on a content work product showing the live run that
+     produced the current draft.
+   - `paperclipai run --tail` in the CLI.
 
-3. **Local Claude Code bridge (priority 2)**
-   - Persist CLI session handles so a board user can "resume" a long-
-     running Claude Code conversation after server restart instead of
-     starting cold.
-   - Plumb `--tail` on `paperclipai run` to subscribe to the new SSE
-     stream.
+3. **M4 — Content Templates**
+   - Company-scoped templates bundling outline + section prompts + pass
+     criteria for a content type. "PDF course" and "Novel chapter" stop
+     being reinvented per project.
+   - Export/import via the existing `companies.sh` portability layer.
 
-4. **Reusable routines (priority 4)**
-   - `paperclipai routines preview <id> --next 5` — show the next five
-     scheduled firings with resolved variable interpolation.
-   - Routine templates exportable via `companies.sh`.
+4. **M5 — Publishing Targets + Attempts**
+   - Configurable destinations (Gumroad, Substack, R2, GitHub, your
+     CMS), credentials via existing company secrets.
+   - Idempotent `POST /api/content-work-products/:id/publish-to/:targetId`
+     with audit log.
 
-5. **Operational hardening (priority 1 follow-ups)**
+5. **M6 — Vertical polish**
+   - Novel factory: continuity-check as a required review gate before
+     `draft → in_review`; Bible-update workflow where lore-keeper
+     proposes canon additions.
+   - Course factory: wire cost service → per-product margin tracking.
+
+6. **Ongoing — deployment hardening follow-ups**
+   - Secret master-key rotation + per-agent/per-routine secret scoping.
+   - `/metrics` Prometheus exposition + Grafana dashboard.
    - Rate limiter on `/api/auth`, invite creation, board claim.
    - Recovery-mode read-only board when migrations are pending.
    - Backup restore-smoke (`paperclipai db:restore-check`).
@@ -181,6 +268,18 @@ In order, still on this branch:
   `docs/deploy/environment-variables.md`,
   `doc/DEPLOYMENT-MODES.md` — all additions at the bottom. Merge risk:
   low.
+- `packages/db/src/migrations/0058_fork_content_work_products.sql` and
+  the matching journal entry — **medium risk**. If upstream ships a
+  new `0058`, rename to the next free slot and move the journal entry.
+  The tag contains `fork_` so the conflict is obvious in a diff.
+- `packages/db/src/schema/{index,content_work_products}.ts` — new
+  schema file + single-line index add. Merge risk: trivial.
+- `packages/shared/src/{index,types/index,validators/index}.ts` —
+  additive-only exports for `ContentWorkProduct*` types/validators.
+  Merge risk: trivial.
+- `server/src/services/index.ts`, `server/src/routes/index.ts`,
+  `server/src/app.ts` — each adds a single import + one mount/export
+  line for the content work products routes. Merge risk: trivial.
 - New files (`deployment-readiness.ts`, new tests) will not conflict with
   upstream by construction.
 

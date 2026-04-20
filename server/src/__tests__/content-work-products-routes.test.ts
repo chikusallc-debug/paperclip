@@ -13,6 +13,7 @@ const mockService = vi.hoisted(() => ({
   getVersion: vi.fn(),
   addVersion: vi.fn(),
   publish: vi.fn(),
+  evaluateCriteria: vi.fn(),
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
@@ -193,6 +194,7 @@ describe("content work product routes", () => {
       FAKE_WP_ID,
       {},
       expect.anything(),
+      { bypass: false },
     );
   });
 
@@ -263,5 +265,92 @@ describe("content work product routes", () => {
       expect.anything(),
       expect.objectContaining({ agentId: "agent-7", runId: "run-42", userId: null }),
     );
+  });
+
+  describe("pass-criteria gate", () => {
+    it("GET pass-criteria returns the service evaluation", async () => {
+      mockService.evaluateCriteria.mockResolvedValue({
+        hasCriteria: true,
+        criteria: { minWordcount: 3000 },
+        result: {
+          passed: false,
+          failures: [
+            { code: "min_wordcount", message: "Word count 500 is below minimum 3000" },
+          ],
+          stats: { wordcount: 500, headings: [], tags: [] },
+        },
+        evaluatedAgainstVersionNumber: 2,
+      });
+      const app = await createApp();
+      const res = await request(app).get(
+        `/api/content-work-products/${FAKE_WP_ID}/pass-criteria`,
+      );
+      expect(res.status).toBe(200);
+      expect(res.body.result.passed).toBe(false);
+      expect(res.body.hasCriteria).toBe(true);
+    });
+
+    it("returns 422 with structured details when addVersion throws PassCriteriaError", async () => {
+      // Import dynamically so we use the real class.
+      const { PassCriteriaError } = await import("../services/content-work-products.js");
+      mockService.addVersion.mockRejectedValueOnce(
+        new PassCriteriaError(
+          {
+            passed: false,
+            failures: [
+              { code: "min_wordcount", message: "Word count 10 is below minimum 3000" },
+            ],
+            stats: { wordcount: 10, headings: [], tags: [] },
+          },
+          "in_review",
+        ),
+      );
+      const app = await createApp();
+      const res = await request(app)
+        .post(`/api/content-work-products/${FAKE_WP_ID}/versions`)
+        .send({ body: "too short", advanceStatusTo: "in_review" });
+      expect(res.status).toBe(422);
+      expect(res.body.details?.code).toBe("pass_criteria_failed");
+      expect(res.body.details?.targetStatus).toBe("in_review");
+      expect(Array.isArray(res.body.details?.failures)).toBe(true);
+    });
+
+    it("board PATCH with ?bypass=true passes the bypass gate to the service", async () => {
+      mockService.update.mockResolvedValue({ id: FAKE_WP_ID, status: "in_review" });
+      const app = await createApp();
+      await request(app)
+        .patch(`/api/content-work-products/${FAKE_WP_ID}?bypass=true`)
+        .send({ status: "in_review" });
+      const [, , , , gate] = mockService.update.mock.calls[0]!;
+      expect(gate).toEqual({ bypass: true });
+    });
+
+    it("agent PATCH with ?bypass=true is silently ignored (agent cannot bypass)", async () => {
+      mockService.update.mockResolvedValue({ id: FAKE_WP_ID, status: "in_review" });
+      const app = await createApp({
+        actor: {
+          type: "agent",
+          agentId: "agent-7",
+          companyId: FAKE_COMPANY_ID,
+          runId: "run-1",
+          source: "agent_jwt",
+        },
+      });
+      await request(app)
+        .patch(`/api/content-work-products/${FAKE_WP_ID}?bypass=true`)
+        .send({ status: "in_review" });
+      const [, , , , gate] = mockService.update.mock.calls[0]!;
+      expect(gate).toEqual({ bypass: false });
+    });
+
+    it("publish route threads bypass through to the service for board", async () => {
+      mockService.publish.mockResolvedValue({ id: FAKE_WP_ID, status: "published" });
+      const app = await createApp();
+      await request(app)
+        .post(`/api/content-work-products/${FAKE_WP_ID}/publish?bypass=true`)
+        .send({});
+      const [, , , , gate] = mockService.publish.mock.calls[0]!;
+      expect(gate).toEqual({ bypass: true });
+    });
   });
 });

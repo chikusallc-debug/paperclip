@@ -217,6 +217,18 @@ export {
 } from "./content-template.js";
 
 export {
+  createPublishingTargetSchema,
+  updatePublishingTargetSchema,
+  publishWorkProductSchema,
+  publishingTargetNameSchema,
+  publishingTargetTypeSchema,
+  webhookTargetConfigSchema,
+  type CreatePublishingTargetInput,
+  type UpdatePublishingTargetInput,
+  type PublishWorkProductInput,
+} from "./publishing.js";
+
+export {
   executionWorkspaceConfigSchema,
   updateExecutionWorkspaceSchema,
   executionWorkspaceStatusSchema,

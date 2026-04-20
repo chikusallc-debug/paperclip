@@ -119,6 +119,13 @@ export type {
 } from "./knowledge-base.js";
 export type { ContentTemplate } from "./content-template.js";
 export type {
+  PublishingTarget,
+  PublishingTargetType,
+  WebhookTargetConfig,
+  PublishAttempt,
+  PublishAttemptStatus,
+} from "./publishing.js";
+export type {
   Issue,
   IssueAssigneeAdapterOverrides,
   IssueRelation,

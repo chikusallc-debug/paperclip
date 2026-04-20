@@ -428,6 +428,13 @@
       "when": 1776672000000,
       "tag": "0060_fork_content_templates",
       "breakpoints": true
+    },
+    {
+      "idx": 61,
+      "version": "7",
+      "when": 1776758400000,
+      "tag": "0061_fork_publishing",
+      "breakpoints": true
     }
   ]
 }

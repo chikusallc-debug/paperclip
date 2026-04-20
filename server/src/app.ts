@@ -37,6 +37,7 @@ import { adapterRoutes } from "./routes/adapters.js";
 import { contentWorkProductRoutes } from "./routes/content-work-products.js";
 import { knowledgeBaseRoutes } from "./routes/knowledge-base.js";
 import { runStreamRoutes } from "./routes/run-stream.js";
+import { contentTemplateRoutes } from "./routes/content-templates.js";
 import { pluginUiStaticRoutes } from "./routes/plugin-ui-static.js";
 import { applyUiBranding } from "./ui-branding.js";
 import { logger } from "./middleware/logger.js";
@@ -203,6 +204,7 @@ export async function createApp(
   api.use(contentWorkProductRoutes(db));
   api.use(knowledgeBaseRoutes(db));
   api.use(runStreamRoutes(db));
+  api.use(contentTemplateRoutes(db));
   api.use(costRoutes(db));
   api.use(activityRoutes(db));
   api.use(dashboardRoutes(db));

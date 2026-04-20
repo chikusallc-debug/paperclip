@@ -71,6 +71,16 @@ type EmbeddedPostgresCtor = new (opts: {
 }) => EmbeddedPostgresInstance;
 
 
+export {
+  readMasterKeyFromFile,
+  generateMasterKey,
+  rotateLocalEncryptedSecrets,
+  verifyLocalEncryptedSecrets,
+  atomicSwapKeyFile,
+  type RotationProgress,
+  type RotationOptions,
+} from "./secrets/rotation.js";
+
 export interface StartedServer {
   server: ReturnType<typeof createServer>;
   host: string;

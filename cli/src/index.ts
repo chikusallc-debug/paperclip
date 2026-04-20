@@ -6,6 +6,7 @@ import { configure } from "./commands/configure.js";
 import { addAllowedHostname } from "./commands/allowed-hostname.js";
 import { heartbeatRun } from "./commands/heartbeat-run.js";
 import { tailHeartbeatRun } from "./commands/heartbeat-tail.js";
+import { rotateSecretsCommand, verifySecretsCommand } from "./commands/secrets-rotate.js";
 import { runCommand } from "./commands/run.js";
 import { bootstrapCeoInvite } from "./commands/auth-bootstrap-ceo.js";
 import { dbBackupCommand } from "./commands/db-backup.js";
@@ -169,6 +170,34 @@ registerRoutineCommands(program);
 registerFeedbackCommands(program);
 registerWorktreeCommands(program);
 registerPluginCommands(program);
+
+const secrets = program.command("secrets").description("Secret store maintenance utilities");
+
+secrets
+  .command("verify")
+  .description("Decrypt every local_encrypted secret version and verify its stored sha256")
+  .option("-c, --config <path>", "Path to Paperclip config file")
+  .option("-d, --data-dir <path>", DATA_DIR_OPTION_HELP)
+  .option("--key-file <path>", "Override master key file path")
+  .option("--database-url <url>", "Override DATABASE_URL")
+  .option("--json", "Emit the verification report as JSON")
+  .action((opts: Record<string, unknown>) => verifySecretsCommand(opts as never));
+
+secrets
+  .command("rotate-master-key")
+  .description(
+    "Re-encrypt every local_encrypted secret under a new master key. Defaults to dry-run; pass --apply to commit.",
+  )
+  .option("-c, --config <path>", "Path to Paperclip config file")
+  .option("-d, --data-dir <path>", DATA_DIR_OPTION_HELP)
+  .option("--old-key-file <path>", "Current master key file (defaults to configured path)")
+  .option("--new-key-file <path>", "Destination for the new master key (required unless --new-key is passed)")
+  .option("--new-key <value>", "Supply the new key inline as base64 or hex (32 bytes)")
+  .option("--generate", "Generate a fresh 32-byte key (pair with --new-key-file to persist it)")
+  .option("--database-url <url>", "Override DATABASE_URL")
+  .option("--apply", "Actually write the new ciphertext and swap the key file. Without this the run is a dry-run.")
+  .option("--json", "Emit the rotation report as JSON")
+  .action((opts: Record<string, unknown>) => rotateSecretsCommand(opts as never));
 
 const auth = program.command("auth").description("Authentication and bootstrap utilities");
 

@@ -81,4 +81,13 @@ export {
   type ReadinessStatus,
   type ReadinessOverall,
 } from "./deployment-readiness.js";
+export {
+  readMasterKeyFromFile,
+  generateMasterKey,
+  rotateLocalEncryptedSecrets,
+  verifyLocalEncryptedSecrets,
+  atomicSwapKeyFile,
+  type RotationProgress,
+  type RotationOptions,
+} from "../secrets/rotation.js";
 export { createStorageServiceFromConfig, getStorageService } from "../storage/index.js";

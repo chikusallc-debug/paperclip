@@ -269,6 +269,41 @@ Useful when experimenting with rule sets before saving them.
 
 ---
 
+## Live Run Tail (SSE)
+
+Operators and sibling agents can watch a run in real time:
+
+```
+GET /api/heartbeat-runs/{runId}/events/stream?afterSeq={N}
+Accept: text/event-stream
+```
+
+- Replays any events after `afterSeq` from the DB on connect, so
+  reconnecting clients resume without loss (the `id:` field carries
+  the event `seq`).
+- Then streams live `heartbeat.run.event` frames for this run and
+  `heartbeat.run.status` frames for state transitions.
+- Sends an SSE `end` frame and closes when the run reaches a terminal
+  status (`completed` / `failed` / `cancelled` / `timed_out`).
+- Sends a keep-alive comment every 25 seconds.
+
+Frame types:
+
+- `event: heartbeat.run.event` — structured run event (stdout/stderr,
+  tool-call, lifecycle milestone). `data` includes `seq`, `eventType`,
+  `stream`, `level`, `message`, `payload`.
+- `event: heartbeat.run.status` — status transition.
+- `event: end` — run reached a terminal status; close the connection.
+- `event: error` — server-side replay/subscribe failure before the
+  live subscription established.
+
+CORS / proxy notes: the endpoint sets `Cache-Control: no-cache,
+no-store, no-transform` and `X-Accel-Buffering: no` so the stream is
+not buffered by Nginx. Clients should honor SSE reconnection semantics
+and resend `?afterSeq={lastSeq}` on reconnect.
+
+---
+
 ## Errors
 
 | Status | Cause |

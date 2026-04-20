@@ -26,7 +26,8 @@ milestone.
 |-----------|-------|--------|
 | M1 | Content Work Products + Versions core | **shipped** |
 | M2 | Knowledge Base + Context Packs | **shipped** |
-| M3 | Live Run SSE tail (slice of observability) | planned |
+| M3a | Live Run SSE tail | **shipped** |
+| M3b | Prompt auto-hydration (context packs into wake prompts) | planned |
 | M4 | Content Templates (reusable per type) | planned |
 | M5 | Publishing Targets + Attempts | planned |
 | M6 | Vertical polish (continuity gate, pricing/margin) | planned |
@@ -289,21 +290,78 @@ Design tradeoffs:
   RHS. Fast on small arrays; if tags grow into the thousands we can
   add a GIN index without schema-shape changes.
 
+### 4. Live Run SSE tail (M3a, shipped)
+
+Problem: Polling `GET /heartbeat-runs/:id/events?afterSeq=N` works
+but is a round-trip every few seconds for an agent run that may
+last minutes. Operators can't reliably *watch* a novel being
+written. Debugging relies on log-tailing after the fact.
+
+Shipped:
+
+- `GET /api/heartbeat-runs/:runId/events/stream?afterSeq=N`
+  Server-Sent Events endpoint on top of the existing in-process
+  live-events bus (no new infrastructure, no bus changes).
+- **Catch-up first, then live.** Replays DB-persisted events after
+  `afterSeq` as a bounded (500-event) batch so reconnecting clients
+  don't miss anything. Live events are de-duplicated against the
+  replayed seq window so nothing delivers twice across the boundary.
+- **Terminal-status close.** Emits a final `event: end` frame and
+  closes when it observes `heartbeat.run.status` with a terminal
+  value (completed / failed / cancelled / timed_out). Late
+  subscribers of an already-completed run get the replay and close
+  immediately instead of hanging.
+- **Reverse-proxy friendly headers.** `Cache-Control: no-cache,
+  no-store, no-transform`, `X-Accel-Buffering: no`, flushed headers,
+  `TCP_NODELAY`, and a 25-second keep-alive comment (under
+  Nginx/Cloudflare idle timeouts).
+- Cross-tenant isolation: the route resolves the run first, then
+  enforces `assertCompanyAccess` on the owning company. Agents
+  never see another company's run bus.
+- Tests: 7 cases using a real `http.Server` + hand-rolled SSE
+  parser — 404, 403 cross-tenant, replay-then-close for terminal
+  runs, live forwarding with seq dedup across the replay boundary,
+  other-run event filtering, terminal-close mid-stream, and the
+  client-disconnect unsubscribe path.
+
+Design tradeoffs:
+
+- **Reused the existing `publishLiveEvent` bus** rather than
+  building a new run-scoped bus. Trades some client-side noise
+  (every company-event subscriber sees all run events and filters)
+  for zero new infrastructure. At current scale this is the right
+  call; a per-run channel would only matter if a single company
+  had hundreds of concurrent subscribers per run.
+- **Replay cap at 500 events** per connect. A 2000-event run
+  requires two successive connects with increasing `afterSeq`; the
+  CLI / UI tail helpers can handle this. Cap prevents a
+  late-joining client from blocking the event loop on replay.
+- **Did not add a `heartbeat.run.log` raw-stdout forwarder** in
+  M3a. The structured events are what agents actually need.
+  Reading full stdout still goes through the existing
+  `/heartbeat-runs/:id/log` offset-based endpoint. We can add a
+  raw-stream variant if logs-as-you-go becomes a hot path.
+- **In-memory bus only.** Multiple server processes don't share
+  subscriptions. Intentional for single-tenant self-hosted
+  deployments; when we outgrow it, Redis pub/sub slots in behind
+  the same `subscribeCompanyLiveEvents` interface.
+
 ## What Should Be Done Next
 
 Content-factory milestones come first (they unlock the Neuroxcel
 workflows); deployment-hardening follow-ups continue in parallel.
 
-1. **M3 — Live Run SSE tail + prompt auto-hydration**
-   - `GET /api/heartbeat-runs/:id/stream` — Server-Sent Events tail of
-     structured run events (stdout, tool calls, usage).
-   - Board UI panel on a content work product showing the live run that
-     produced the current draft.
-   - `paperclipai run --tail` in the CLI.
-   - **Auto-hydration:** when an agent's config references a context
-     pack, the pack is resolved and inlined into the agent's prompt at
-     wake time. This is the payoff of M2's deterministic rule system —
-     every writer sees the same canon without explicit API calls.
+1. **M3b — Prompt auto-hydration**
+   - Add a `contextPackIds: string[]` field to agent runtime config so
+     operators can attach packs without a migration.
+   - At wake-time, server resolves every attached pack, concatenates,
+     and sets `PAPERCLIP_CONTEXT_PACK_JSON` on the adapter execution
+     context (alongside the existing `PAPERCLIP_WAKE_PAYLOAD_JSON`).
+   - Update the content-factory skill to instruct agents to read
+     `$PAPERCLIP_CONTEXT_PACK_JSON` at the start of each run.
+   - Board UI panel on a content work product showing the live run
+     via the M3a SSE tail.
+   - `paperclipai run --tail` CLI subcommand.
 
 2. **M4 — Content Templates**
    - Company-scoped templates bundling outline + section prompts + pass
@@ -370,6 +428,11 @@ workflows); deployment-hardening follow-ups continue in parallel.
   paragraph pointing at the new reference; the reference is fully new.
   Merge risk: low, but SKILL.md is a frequently-touched upstream file
   so prefer stanza-level re-application over whole-file overwrite.
+- `server/src/routes/run-stream.ts` — new standalone SSE route file.
+  Mounts under `/api` next to the existing heartbeat-run endpoints in
+  `agents.ts`. Merge risk: trivial (new file; one-line mount in
+  `app.ts`). If upstream ever adds their own streaming endpoint at
+  `/heartbeat-runs/:runId/events/stream`, we rename the route.
 - New files (`deployment-readiness.ts`, new tests) will not conflict with
   upstream by construction.
 

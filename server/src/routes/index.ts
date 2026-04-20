@@ -22,3 +22,4 @@ export { knowledgeBaseRoutes } from "./knowledge-base.js";
 export { runStreamRoutes } from "./run-stream.js";
 export { contentTemplateRoutes } from "./content-templates.js";
 export { publishingRoutes } from "./publishing.js";
+export { metricsRoutes } from "./metrics.js";

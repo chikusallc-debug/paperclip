@@ -19,3 +19,4 @@ export { accessRoutes } from "./access.js";
 export { instanceSettingsRoutes } from "./instance-settings.js";
 export { contentWorkProductRoutes } from "./content-work-products.js";
 export { knowledgeBaseRoutes } from "./knowledge-base.js";
+export { runStreamRoutes } from "./run-stream.js";

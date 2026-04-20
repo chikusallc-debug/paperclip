@@ -29,6 +29,7 @@ milestone.
 | M3a | Live Run SSE tail | **shipped** |
 | M3b | Prompt auto-hydration (context packs into wake prompts) | **shipped** |
 | M4 | Content Templates (reusable per type) | **shipped** |
+| M5 | Publishing Targets + Attempts (webhook provider) | **shipped** |
 | M5 | Publishing Targets + Attempts | planned |
 | M6 | Vertical polish (continuity gate, pricing/margin) | planned |
 
@@ -491,18 +492,116 @@ Design tradeoffs:
   version body" invariant. A dedicated table is worth the
   migration.
 
+### 7. Publishing Targets + Attempts (M5, shipped)
+
+Problem: Factory loop was sharp on the drafting side but had no way
+to *ship*. A novel chapter finished `final`/`published` status went
+nowhere; a course section sat in the DB waiting for a human to copy
+it into Gumroad. Publishing is also the highest-blast-radius
+feature of the factory — external credentials, network egress, SSRF
+surface — so it needed explicit hardening before shipping.
+
+Shipped:
+
+- New tables in migration `0061_fork_publishing`:
+  - `publishing_targets` — per-company, unique name, type
+    ("webhook" in v1), jsonb config, optional secret_id referencing
+    the existing `company_secrets` table.
+  - `publish_attempts` — append-only audit log keyed by
+    (work product version × target). Stores compact request and
+    response summaries (first 2 KB body, headers with auth
+    redacted). Never stores secret values.
+- Shared types and validators. Target config is type-discriminated
+  (webhook v1); URL validation is deployment-agnostic in the
+  shared schema — scheme and host checks happen in the service.
+- Pure webhook provider in `publishing-providers.ts`:
+  - SSRF guard via `assertPublishUrlAllowed`: rejects non-https by
+    default (env-gated escape hatch for local), rejects userinfo
+    credentials, rejects private/loopback/link-local hosts
+    (127/8, 10/8, 172.16/12, 192.168/16, 169.254/16, ::1,
+    fe80::/10) — AWS IMDS explicitly blocked by default.
+  - 30-second timeout (max 60s), abortable via AbortController.
+  - Default `Authorization: Bearer <secret>` with operator-
+    overridable header name and scheme.
+  - Optional HMAC-SHA256 request-body signature header.
+  - Deterministic header redaction (Authorization, cookies,
+    `x-*-signature`, `x-*-token`, `x-*-api-key`, `x-*-auth`) so
+    secrets never reach the attempt log.
+- `publishingService`: target CRUD (with cross-tenant secret
+  enforcement), `publishWorkProduct()` orchestration that resolves
+  the version (provided → latest), resolves the auth secret
+  fresh, inserts a pending attempt row, dispatches to the
+  provider, and finalizes the attempt row in place.
+- REST API:
+    GET    /api/companies/:id/publishing-targets
+    POST   /api/companies/:id/publishing-targets
+    GET    /api/publishing-targets/:id
+    PATCH  /api/publishing-targets/:id
+    DELETE /api/publishing-targets/:id
+    POST   /api/content-work-products/:id/publish-to/:targetId
+    GET    /api/content-work-products/:id/publish-attempts
+- Skill reference `content-factory.md` gained a "Publishing
+  Targets" section with the full config schema, security
+  guardrails, and a worked factory publishing loop.
+- Tests: 15 validator, 18 provider (unit, pure — no network;
+  SSRF guard covers every private range + loopback + link-local),
+  8 route (mocked service, cross-tenant 403/404, agent-actor
+  context propagation), 8 embedded-pg service tests (publish
+  happy-path, refuse-no-versions, refuse-disabled,
+  secret-resolution-and-redaction, cross-tenant-secret rejection,
+  failed-non-2xx-still-recorded, name-uniqueness per company,
+  scoped reads). **41 non-pg pass locally; 8 service tests run in
+  CI with embedded-pg available.**
+
+Design tradeoffs:
+
+- **Webhook-only in v1 by choice.** Dedicated providers for GitHub
+  (git push), R2/S3 (object upload), and Substack (native API)
+  each have their own SDK surface, security model, and
+  retry/idempotency semantics. A generic authenticated HTTPS POST
+  covers the majority of CMS/webhook endpoints today with one
+  auditable code path. Follow-up milestones slot new providers
+  into the existing provider registry without touching the
+  service or routes.
+- **SSRF hardened by default.** Operators deploying to a server
+  on a shared network (AWS, GCP, a corporate LAN) get automatic
+  protection against targets that resolve to 169.254.169.254
+  (AWS IMDS), 10.x.x.x (internal services), etc. The
+  `PAPERCLIP_PUBLISHING_ALLOW_PRIVATE=true` escape hatch exists
+  only for local development and is documented as such. This is
+  a deployment hardening win that also lives in the content
+  factory code path.
+- **Failed publish = success HTTP + recorded row.** The API
+  returns 2xx when the publish attempt *ran*, regardless of
+  whether the target returned 2xx. This mirrors how Stripe and
+  GitHub model outbound webhook delivery and makes retry logic
+  straightforward. Misconfiguration (disabled target, missing
+  versions, SSRF-rejected URL) is 4xx as usual.
+- **No built-in retry or backoff in v1.** Operators can
+  re-POST `publish-to` to retry — each attempt gets its own row.
+  Automated exponential-backoff retry is a follow-up once we
+  understand which targets actually need it (webhook servers are
+  usually designed to be retry-tolerant already).
+- **No integration into M3a SSE tail in v1.** Publish attempts
+  are one-shot, not run-scoped, so they don't belong in a
+  heartbeat-run event stream. A separate `/api/companies/:id/
+  publish-attempts/stream` could land if operator demand shows
+  up — cheap to build on the existing `subscribeCompanyLiveEvents`.
+- **DNS not resolved server-side before URL check.** The SSRF
+  guard only sees the literal hostname. A malicious operator
+  could point a public DNS name at 169.254.169.254 to bypass the
+  check. In a single-tenant fork this threat model is weak
+  (operator = attacker == defender). For multi-tenant deployments
+  we'd want to either resolve DNS at validate-time and re-check,
+  or run publishes through a dedicated egress proxy that blocks
+  private destinations at L4. Filed as a follow-up.
+
 ## What Should Be Done Next
 
 Content-factory milestones come first (they unlock the Neuroxcel
 workflows); deployment-hardening follow-ups continue in parallel.
 
-1. **M5 — Publishing Targets + Attempts**
-   - Configurable destinations (Gumroad, Substack, R2, GitHub, your
-     CMS), credentials via existing company secrets.
-   - Idempotent `POST /api/content-work-products/:id/publish-to/:targetId`
-     with audit log.
-
-2. **M6 — Vertical polish**
+1. **M6 — Vertical polish**
    - Novel factory: continuity-check as a required review gate before
      `draft → in_review`; Bible-update workflow where lore-keeper
      proposes canon additions.
@@ -510,15 +609,23 @@ workflows); deployment-hardening follow-ups continue in parallel.
    - Board UI panel on a content work product showing the live run via
      the M3a SSE tail + `paperclipai run --tail` CLI subcommand.
 
-3. **Content-factory follow-ups (small, can land anytime)**
+2. **Content-factory follow-ups (small, can land anytime)**
    - Per-work-product context-pack hydration: when a wake targets an
      issue whose content work product has `metadata.contextPackIds`,
      hydrate those too (in addition to the agent's packs).
    - Portability extension: include content templates, work products,
-     KB docs, and context packs in `companyPortabilityService` export/
-     import manifests.
+     KB docs, and context packs (and publishing targets, minus
+     secretId) in `companyPortabilityService` export/import manifests.
+   - Dedicated publishing providers: GitHub (git push to a repo
+     path), R2/S3 (object upload with optional signed URL return),
+     Substack native API. Each lands as a new provider registered
+     via `getPublishProvider` — no service or route change needed.
+   - DNS-aware SSRF check: resolve the publish target hostname at
+     validate time, reject if any answer is a private IP. Worth
+     doing before exposing the factory to an adversarial operator.
+   - Publishing retry/backoff policy with bounded attempt history.
 
-4. **Ongoing — deployment hardening follow-ups**
+3. **Ongoing — deployment hardening follow-ups**
    - Secret master-key rotation + per-agent/per-routine secret scoping.
    - `/metrics` Prometheus exposition + Grafana dashboard.
    - Rate limiter on `/api/auth`, invite creation, board claim.
@@ -598,6 +705,24 @@ workflows); deployment-hardening follow-ups continue in parallel.
 - `skills/paperclip/references/content-factory.md` — appended a
   "Content Templates" section before the existing "Live Run Tail"
   section. Low risk (our own file within a fork-specific reference).
+- `packages/db/src/migrations/0061_fork_publishing.sql` + journal
+  entry; `packages/db/src/schema/publishing.ts` — migration slot
+  collision risk if upstream adds a 0061. `fork_` prefix keeps it
+  visible.
+- `packages/shared/src/{index,types/index,validators/index}.ts` —
+  additive exports for publishing types/validators. Trivial.
+- `server/src/services/publishing-providers.ts`,
+  `server/src/services/publishing.ts`,
+  `server/src/routes/publishing.ts` — new files. Trivial.
+- `server/src/services/index.ts`, `server/src/routes/index.ts`,
+  `server/src/app.ts` — additive one-line mounts for the
+  publishing routes.
+- `skills/paperclip/references/content-factory.md` — a new
+  "Publishing Targets" section added before the "Live Run Tail"
+  section. Low risk.
+- New env vars: `PAPERCLIP_PUBLISHING_ALLOW_HTTP` and
+  `PAPERCLIP_PUBLISHING_ALLOW_PRIVATE`. Additive, opt-in, default
+  to the safe value.
 - New files (`deployment-readiness.ts`, new tests) will not conflict with
   upstream by construction.
 

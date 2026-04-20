@@ -20,6 +20,8 @@ All environment variables that Paperclip uses for server configuration.
 | `PAPERCLIP_DEPLOYMENT_EXPOSURE` | `private` | Exposure policy when deployment mode is `authenticated` |
 | `PAPERCLIP_API_URL` | (auto-derived) | Paperclip API base URL. When set externally (e.g., via Kubernetes ConfigMap, load balancer, or reverse proxy), the server preserves the value instead of deriving it from the listen host and port. Useful for deployments where the public-facing URL differs from the local bind address. |
 | `PAPERCLIP_STRICT_STARTUP_CHECKS` | `false` | When `true`, refuse to start if any `/api/health/ready` check returns `fail` (for example: weak `BETTER_AUTH_SECRET`, unwritable storage dir, missing `publicBaseUrl` in authenticated/public). Recommended for production. |
+| `PAPERCLIP_PUBLISHING_ALLOW_HTTP` | `false` | When `true`, the webhook publishing provider accepts `http://` target URLs. Intended for local testing only; leave unset in any internet-facing deployment. |
+| `PAPERCLIP_PUBLISHING_ALLOW_PRIVATE` | `false` | When `true`, the webhook publishing provider accepts private / loopback / link-local target hosts (127.x, 10.x, 172.16/12, 192.168/16, 169.254/16, ::1, fe80::/10). Use only for local testing; enabling on a shared server exposes an SSRF surface into the operator's internal network. |
 
 ## Secrets
 

@@ -394,6 +394,109 @@ POST /api/content-templates/{id}/instantiate
 
 ---
 
+## Publishing Targets
+
+A publishing target is an external destination a content work product
+can be shipped to: Gumroad via webhook, your CMS's publish endpoint,
+a Substack ingester, a custom HTTP receiver. V1 ships **webhook** as
+the single generic provider — an authenticated HTTPS POST whose JSON
+body includes the inline work product + version. Dedicated providers
+(native GitHub, R2, Substack API) are planned follow-ups.
+
+### Create a target
+
+```
+POST /api/companies/{companyId}/publishing-targets
+{
+  "name": "gumroad",                        // kebab-case, unique per company
+  "description": "Gumroad product webhook",
+  "type": "webhook",
+  "config": {
+    "url": "https://api.gumroad.com/hook",
+    "method": "POST",                       // or PUT
+    "headers": { "X-Custom": "v" },         // extra (non-secret) headers
+    "authHeader": "Authorization",          // default
+    "authScheme": "Bearer ",                // default; set "" to disable
+    "hmacHeader": "X-Signature",            // optional HMAC-SHA256(body)
+    "timeoutMs": 15000                      // 1s..60s, default 30s
+  },
+  "secretId": "<company-secret-uuid>",      // auth credential (resolved per call)
+  "enabled": true
+}
+```
+
+Credentials live in the existing company secrets table — the target
+row stores only the secret's id. Every publish resolves the secret
+fresh and never writes its value to the attempt log.
+
+### Publish a work product
+
+```
+POST /api/content-work-products/{workProductId}/publish-to/{targetId}
+{
+  "versionNumber": 3                         // optional; defaults to latest
+}
+```
+
+Returns the recorded `PublishAttempt`:
+
+```
+{
+  "id": "...", "status": "success" | "failed",
+  "httpStatus": 200, "durationMs": 184,
+  "requestSummary": { method, url, host, headers: { authorization: "***REDACTED***", ... }, bodyBytes },
+  "responseSummary": { headers, body (first 2 KB) },
+  "errorMessage": null,
+  "startedAt": "...", "completedAt": "..."
+}
+```
+
+**A failed publish is still a recorded attempt.** The service returns
+2xx with `status: "failed"` in the body when the provider was
+reached but returned non-2xx or threw. Only misconfiguration (unknown
+target, disabled, missing versions, SSRF-blocked URL) results in
+4xx/5xx from this endpoint.
+
+### List attempts
+
+```
+GET /api/content-work-products/{workProductId}/publish-attempts
+```
+
+Returns attempts newest-first, scoped to the caller's company.
+
+### Security guardrails
+
+- HTTPS required. Set `PAPERCLIP_PUBLISHING_ALLOW_HTTP=true` on the
+  server (not per-target) to enable `http://` — intended for local
+  development only.
+- Private / loopback / link-local hosts are rejected to prevent SSRF
+  into the operator's internal network (includes 127/8, 10/8,
+  172.16/12, 192.168/16, 169.254/16, ::1, fe80::/10). Set
+  `PAPERCLIP_PUBLISHING_ALLOW_PRIVATE=true` to override for
+  local testing. Do NOT enable on an internet-facing deployment.
+- Per-request timeout defaults to 30 s (max 60 s).
+- Secret values never appear in `requestSummary` or
+  `responseSummary` — headers matching auth patterns are redacted.
+- Userinfo credentials in the URL (`https://user:pass@…`) are
+  rejected.
+
+### Factory publishing loop
+
+```
+# Once: wire the target
+POST /api/companies/{id}/publishing-targets { ... }
+
+# Every ship:
+POST /api/content-work-products/{wpId}/publish-to/{targetId} {}
+# → { status: "success", httpStatus: 200, ... }
+
+# Audit trail any time:
+GET /api/content-work-products/{wpId}/publish-attempts
+```
+
+---
+
 ## Live Run Tail (SSE)
 
 Operators and sibling agents can watch a run in real time:

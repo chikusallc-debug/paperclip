@@ -21,3 +21,4 @@ export { contentWorkProductRoutes } from "./content-work-products.js";
 export { knowledgeBaseRoutes } from "./knowledge-base.js";
 export { runStreamRoutes } from "./run-stream.js";
 export { contentTemplateRoutes } from "./content-templates.js";
+export { publishingRoutes } from "./publishing.js";

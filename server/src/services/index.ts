@@ -51,6 +51,23 @@ export {
   type ContentTemplateService,
   type ListContentTemplatesFilters,
 } from "./content-templates.js";
+export {
+  publishingService,
+  type PublishingService,
+  type PublishOptions,
+} from "./publishing.js";
+export {
+  assertPublishUrlAllowed,
+  isLiteralPrivateHost,
+  redactHeaders,
+  webhookProvider,
+  getPublishProvider,
+  listPublishProviderTypes,
+  type PublishProvider,
+  type PublishPayload,
+  type PublishResult,
+  type PublishProviderContext,
+} from "./publishing-providers.js";
 export { logActivity, type LogActivityInput } from "./activity-log.js";
 export { notifyHireApproved, type NotifyHireApprovedInput } from "./hire-hook.js";
 export { publishLiveEvent, subscribeCompanyLiveEvents } from "./live-events.js";

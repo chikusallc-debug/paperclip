@@ -46,6 +46,13 @@ export {
   type ListContextPacksFilters,
 } from "./context-packs.js";
 export {
+  bibleUpdateService,
+  BIBLE_UPDATE_PROPOSAL_TYPE,
+  type BibleUpdateService,
+  type BibleApplyMode,
+  type AppliedBibleUpdate,
+} from "./bible-updates.js";
+export {
   contentTemplateService,
   interpolateTemplate,
   type ContentTemplateService,

@@ -9,10 +9,12 @@ import {
 import { validate } from "../middleware/validate.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import {
+  bibleUpdateService,
   contentWorkProductService,
   logActivity,
   type ListContentWorkProductsFilters,
 } from "../services/index.js";
+import { assertBoard } from "./authz.js";
 
 /**
  * Pass-criteria bypass is board-only. Agents must never bypass their
@@ -289,6 +291,44 @@ export function contentWorkProductRoutes(db: Db) {
       res.json(updated);
     },
   );
+
+  // Bible-update apply. Board-only: agents propose, operators
+  // approve by calling this endpoint. The proposal's latest-version
+  // body is written to the KB doc named by
+  // metadata.targetKbPath (and optionally targetKbProjectId), then
+  // the proposal is flipped to status="applied".
+  router.post("/content-work-products/:id/apply-bible-update", async (req, res) => {
+    const id = req.params.id as string;
+    const companyId = await resolveCompanyId(db, id);
+    if (!companyId) {
+      res.status(404).json({ error: "Content work product not found" });
+      return;
+    }
+    assertCompanyAccess(req, companyId);
+    assertBoard(req);
+    const actor = getActorInfo(req);
+    const bible = bibleUpdateService(db);
+    const applied = await bible.applyBibleUpdate(companyId, id, {
+      userId: actor.actorType === "user" ? actor.actorId : null,
+      agentId: actor.agentId,
+    });
+    await logActivity(db, {
+      companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      action: "bible_update.applied",
+      entityType: "content_work_product",
+      entityId: applied.proposalId,
+      details: {
+        kbDocumentId: applied.kbDocumentId,
+        kbPath: applied.kbPath,
+        applyMode: applied.applyMode,
+        created: applied.created,
+        versionNumber: applied.versionNumber,
+      },
+    });
+    res.status(200).json(applied);
+  });
 
   // Pass-criteria dry-run. Safe to call repeatedly — no side effects.
   // Returns the current latest-version evaluation so agents and

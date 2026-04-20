@@ -8,10 +8,27 @@ import type {
   PublishWorkProductInput,
   UpdatePublishingTargetInput,
 } from "@paperclipai/shared";
+import {
+  githubTargetConfigSchema,
+  webhookTargetConfigSchema,
+} from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import { contentWorkProductService } from "./content-work-products.js";
 import { secretService } from "./secrets.js";
 import { getPublishProvider } from "./publishing-providers.js";
+
+/**
+ * Validate a config payload against the provider type it's targeting.
+ * Used at update time — create uses the shared schema's superRefine.
+ */
+function validateConfigForType(type: string, config: unknown): Record<string, unknown> {
+  const schema = type === "github" ? githubTargetConfigSchema : webhookTargetConfigSchema;
+  const result = schema.safeParse(config);
+  if (!result.success) {
+    throw unprocessable(`Invalid config for ${type} target: ${result.error.message}`);
+  }
+  return result.data as Record<string, unknown>;
+}
 
 type PublishingTargetRow = typeof publishingTargets.$inferSelect;
 type PublishAttemptRow = typeof publishAttempts.$inferSelect;
@@ -172,7 +189,9 @@ export function publishingService(db: Db, opts: PublishOptions = {}) {
         .set({
           name: nextName,
           description: patch.description === undefined ? existing.description : patch.description,
-          config: (patch.config as Record<string, unknown> | undefined) ?? (existing.config as Record<string, unknown>),
+          config: patch.config
+            ? validateConfigForType(existing.type, patch.config)
+            : (existing.config as Record<string, unknown>),
           secretId: patch.secretId === undefined ? existing.secretId : patch.secretId,
           enabled:
             patch.enabled === undefined

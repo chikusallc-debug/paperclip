@@ -3,7 +3,22 @@
  * authenticated HTTPS POST. Future providers (github, r2, substack)
  * slot into the same registry.
  */
-export type PublishingTargetType = "webhook";
+export type PublishingTargetType = "webhook" | "github";
+
+export interface GithubTargetConfig {
+  owner: string;
+  repo: string;
+  branch?: string;
+  /** Path template; supports {{slug}}, {{title}}, {{type}}, {{version}}. */
+  path: string;
+  /** Commit message template; supports the same vars. */
+  message?: string;
+  committerName?: string;
+  committerEmail?: string;
+  /** Override for self-hosted GitHub Enterprise. */
+  apiBaseUrl?: string;
+  timeoutMs?: number;
+}
 
 export interface WebhookTargetConfig {
   /** Destination URL. HTTPS required unless explicitly opted out. */

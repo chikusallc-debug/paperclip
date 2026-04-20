@@ -122,6 +122,7 @@ export type {
   PublishingTarget,
   PublishingTargetType,
   WebhookTargetConfig,
+  GithubTargetConfig,
   PublishAttempt,
   PublishAttemptStatus,
 } from "./publishing.js";

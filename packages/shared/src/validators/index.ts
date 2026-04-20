@@ -223,6 +223,7 @@ export {
   publishingTargetNameSchema,
   publishingTargetTypeSchema,
   webhookTargetConfigSchema,
+  githubTargetConfigSchema,
   type CreatePublishingTargetInput,
   type UpdatePublishingTargetInput,
   type PublishWorkProductInput,

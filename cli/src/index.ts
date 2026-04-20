@@ -5,6 +5,7 @@ import { envCommand } from "./commands/env.js";
 import { configure } from "./commands/configure.js";
 import { addAllowedHostname } from "./commands/allowed-hostname.js";
 import { heartbeatRun } from "./commands/heartbeat-run.js";
+import { tailHeartbeatRun } from "./commands/heartbeat-tail.js";
 import { runCommand } from "./commands/run.js";
 import { bootstrapCeoInvite } from "./commands/auth-bootstrap-ceo.js";
 import { dbBackupCommand } from "./commands/db-backup.js";
@@ -136,6 +137,26 @@ heartbeat
   .option("--json", "Output raw JSON where applicable")
   .option("--debug", "Show raw adapter stdout/stderr JSON chunks")
   .action(heartbeatRun);
+
+heartbeat
+  .command("tail")
+  .description(
+    "Stream structured events for a running heartbeat via /api/heartbeat-runs/:id/events/stream",
+  )
+  .argument("<runId>", "Heartbeat run id to tail")
+  .option("-c, --config <path>", "Path to config file")
+  .option("-d, --data-dir <path>", DATA_DIR_OPTION_HELP)
+  .option("--context <path>", "Path to CLI context file")
+  .option("--profile <name>", "CLI context profile name")
+  .option("--api-base <url>", "Base URL for the Paperclip server API")
+  .option("--api-key <token>", "Bearer token for agent/board auth")
+  .option("--from-seq <n>", "Replay events after this seq before attaching live")
+  .option("--event-type <type>", "Filter to a single eventType (e.g. lifecycle, adapter.invoke)")
+  .option("--json", "Emit each frame as JSON on stdout instead of coloured text")
+  .option("--no-once", "Stay connected after the first terminal event")
+  .action((runId: string, opts: Record<string, unknown>) =>
+    tailHeartbeatRun({ ...(opts as Record<string, unknown>), runId } as never),
+  );
 
 registerContextCommands(program);
 registerCompanyCommands(program);

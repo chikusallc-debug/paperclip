@@ -31,6 +31,7 @@ import { trackAgentFirstHeartbeat } from "@paperclipai/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
 import { companySkillService } from "./company-skills.js";
 import { contextPackService } from "./context-packs.js";
+import { contentWorkProductService } from "./content-work-products.js";
 import { budgetService, type BudgetEnforcementScope } from "./budgets.js";
 import { secretService } from "./secrets.js";
 import { resolveDefaultAgentWorkspaceDir, resolveManagedProjectWorkspaceDir } from "../home-paths.js";
@@ -1498,6 +1499,7 @@ export function heartbeatService(db: Db) {
   const secretsSvc = secretService(db);
   const companySkills = companySkillService(db);
   const contextPacks = contextPackService(db);
+  const contentWorkProducts = contentWorkProductService(db);
   const issuesSvc = issueService(db);
   const executionWorkspacesSvc = executionWorkspaceService(db);
   const workspaceOperationsSvc = workspaceOperationService(db);
@@ -3856,12 +3858,34 @@ export function heartbeatService(db: Db) {
 
       // Auto-hydrate context packs declared on the agent's runtime
       // config so writers see deterministic canon without an explicit
-      // /context-packs/:id/resolve call inside each run. Surfaces as
-      // PAPERCLIP_CONTEXT_PACK_JSON via buildPaperclipEnv.
+      // /context-packs/:id/resolve call inside each run. If the wake
+      // is about a specific issue bound to a content work product
+      // (M4 template flow), also pull pack ids stored on the work
+      // product's metadata — that's how a single Writer agent gets
+      // per-chapter canon instead of static agent-level packs.
+      // Surfaces as PAPERCLIP_CONTEXT_PACK_JSON via buildPaperclipEnv.
       try {
+        const wakeIssueId = typeof context.issueId === "string" && context.issueId
+          ? context.issueId
+          : null;
+        let workProductPackIds: string[] = [];
+        let workProductId: string | null = null;
+        if (wakeIssueId) {
+          const wp = await contentWorkProducts.getLatestForIssue(
+            agent.companyId,
+            wakeIssueId,
+          );
+          if (wp) {
+            workProductId = wp.id;
+            workProductPackIds = contentWorkProducts.extractContextPackIdsFromMetadata(
+              wp.metadata,
+            );
+          }
+        }
         const hydration = await contextPacks.hydrateForAgent({
           companyId: agent.companyId,
           runtimeConfig: agent.runtimeConfig as Record<string, unknown> | null | undefined,
+          additionalPackIds: workProductPackIds,
         });
         if (hydration) {
           context.paperclipContextPack = hydration;
@@ -3876,6 +3900,8 @@ export function heartbeatService(db: Db) {
               truncated: hydration.truncated,
               documentCount: hydration.documents.length,
               missingPackIds: hydration.missingPackIds,
+              workProductId,
+              workProductPackCount: workProductPackIds.length,
             },
           });
         }

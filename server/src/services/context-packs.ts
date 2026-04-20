@@ -257,14 +257,35 @@ export function contextPackService(db: Db) {
      * stable regardless of pack order. Missing / cross-tenant pack ids
      * are silently skipped so one stale pack id doesn't break a whole
      * agent run — a warning is surfaced via `missingPackIds`.
+     *
+     * `additionalPackIds` lets callers merge in pack ids that live
+     * outside the agent's runtime config — for example the pack ids
+     * on the content work product the wake is about. Agent ids take
+     * precedence in the merge order, but docs are deduped by id so
+     * order only matters for `name` composition. When *only*
+     * additionalPackIds are set (agent has none), we still hydrate.
      */
     async hydrateForAgent(input: {
       companyId: string;
       runtimeConfig: Record<string, unknown> | null | undefined;
+      additionalPackIds?: string[];
     }): Promise<(ContextPackResolution & { missingPackIds: string[] }) | null> {
-      const raw = input.runtimeConfig?.contextPackIds;
-      if (!Array.isArray(raw)) return null;
-      const packIds = raw.filter((v): v is string => typeof v === "string" && v.length > 0);
+      const runtimeRaw = input.runtimeConfig?.contextPackIds;
+      const runtimePackIds = Array.isArray(runtimeRaw)
+        ? runtimeRaw.filter((v): v is string => typeof v === "string" && v.length > 0)
+        : [];
+      const extraPackIds = Array.isArray(input.additionalPackIds)
+        ? input.additionalPackIds.filter((v): v is string => typeof v === "string" && v.length > 0)
+        : [];
+      // Preserve caller order (agent first, then WP/extras) but
+      // dedupe so a pack listed in both places only resolves once.
+      const seenIds = new Set<string>();
+      const packIds: string[] = [];
+      for (const id of [...runtimePackIds, ...extraPackIds]) {
+        if (seenIds.has(id)) continue;
+        seenIds.add(id);
+        packIds.push(id);
+      }
       if (packIds.length === 0) return null;
 
       const seenDocIds = new Set<string>();

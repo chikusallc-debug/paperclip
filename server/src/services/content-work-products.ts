@@ -212,6 +212,46 @@ export function contentWorkProductService(db: Db) {
       return row ? toWorkProduct(row) : null;
     },
 
+    /**
+     * Most recently updated work product linked to a given issue
+     * within a company. Used at wake-time so heartbeat hydration can
+     * pull the WP's `metadata.contextPackIds` in addition to the
+     * agent's own packs. Returns null when the issue has no work
+     * product — the caller treats that as "nothing to merge".
+     */
+    async getLatestForIssue(
+      companyId: string,
+      issueId: string,
+    ): Promise<ContentWorkProduct | null> {
+      const rows = await db
+        .select()
+        .from(contentWorkProducts)
+        .where(
+          and(
+            eq(contentWorkProducts.companyId, companyId),
+            eq(contentWorkProducts.issueId, issueId),
+          ),
+        )
+        .orderBy(desc(contentWorkProducts.updatedAt))
+        .limit(1);
+      return rows[0] ? toWorkProduct(rows[0]) : null;
+    },
+
+    /**
+     * Extract `metadata.contextPackIds` from a work product's
+     * metadata. Tolerant of missing / malformed metadata — returns
+     * an empty array. Exposed so the heartbeat can pull the list
+     * without duplicating the metadata-shape knowledge.
+     */
+    extractContextPackIdsFromMetadata(
+      metadata: Record<string, unknown> | null | undefined,
+    ): string[] {
+      if (!metadata || typeof metadata !== "object") return [];
+      const raw = (metadata as { contextPackIds?: unknown }).contextPackIds;
+      if (!Array.isArray(raw)) return [];
+      return raw.filter((v): v is string => typeof v === "string" && v.length > 0);
+    },
+
     async getWithLatest(
       companyId: string,
       id: string,

@@ -30,6 +30,7 @@ milestone.
 | M3b | Prompt auto-hydration (context packs into wake prompts) | **shipped** |
 | M4 | Content Templates (reusable per type) | **shipped** |
 | M5 | Publishing Targets + Attempts (webhook provider) | **shipped** |
+| M6 (slice) | Pass-criteria gate (content quality enforcement) | **shipped** |
 | M5 | Publishing Targets + Attempts | planned |
 | M6 | Vertical polish (continuity gate, pricing/margin) | planned |
 
@@ -596,18 +597,110 @@ Design tradeoffs:
   or run publishes through a dedicated egress proxy that blocks
   private destinations at L4. Filed as a follow-up.
 
+### 8. Pass-criteria gate (M6 slice, shipped)
+
+Problem: M4 let operators define `passCriteria` on a template, and
+instantiating copied it into the work product's metadata — but
+nothing enforced it. An autonomous writer could happily mark a
+500-word draft as `in_review` and move it along the pipeline. For a
+media factory running 24/7, quality gates that are not *enforced*
+are just decoration.
+
+Shipped:
+
+- New pure evaluator in `packages/shared/src/content-pass-
+  criteria.ts`. Five initial rule types
+  (`minWordcount`, `maxWordcount`, `requiredTags`,
+  `requiredHeadings`, `forbiddenPhrases`) with a predictable
+  failure shape. Unknown rule keys ignored so domain profiles can
+  extend without a migration. Wordcount strips fenced / inline
+  code so coding-course bodies don't inflate counts. Heading
+  extraction is ATX-only (`#`..`######`). Evaluator lives in the
+  shared package so the CLI and future UI can reuse it without
+  hitting the server.
+- Server enforcement in `contentWorkProductService`:
+  - `addVersion()`, `update()` (when a PATCH changes status), and
+    `publish()` each take an optional `gate: { bypass?: boolean }`
+    and check the WP's criteria when the incoming status
+    transition is INTO `in_review`, `final`, or `published`.
+  - `update` evaluates against the *latest* stored body (PATCH
+    doesn't carry one); `addVersion` against the *incoming* body;
+    `publish` against the *selected version*. So an operator can
+    publish an older passing version even after drafting a newer
+    non-passing one.
+  - `evaluateCriteria()` dry-runs the check and returns the
+    failure list + stats (wordcount, headings, tags) — agents can
+    call it before attempting a transition.
+- `PassCriteriaError` extends the existing `HttpError` so the
+  shared error handler renders 422 with
+  `details: { code: "pass_criteria_failed", targetStatus, failures,
+  stats }`. Agents parse this to know exactly which rules blocked
+  advancement.
+- New route: `GET /api/content-work-products/:id/pass-criteria`.
+- Gated endpoints accept `?bypass=true`. The route layer only
+  honors it when `req.actor.type === "board"`; agent calls with
+  that query silently proceed with `bypass: false`. Every
+  bypassed call is logged with `gateBypass: true` in the
+  activity record.
+- Skill reference gets a "Pass Criteria Gate" section with the
+  rule table, the dry-run endpoint, the 422 shape, and the
+  board-bypass contract.
+- Tests: 21 evaluator cases (every rule + multi-failure
+  collection + forward-compat ignoring of unknown keys / invalid
+  values), 5 route cases (dry-run endpoint, 422 structured
+  response, board bypass honored, agent bypass ignored, publish
+  bypass threads through), 9 embedded-pg service cases (block on
+  add-version, pass on sufficient body, skip gate when no
+  criteria, skip gate on non-gated target states, block publish,
+  bypass overrides publish, block PATCH, evaluateCriteria
+  returns null vs full failure list).
+
+Design tradeoffs:
+
+- **Narrow rule vocabulary v1.** Five rules cover the Neuroxcel
+  continuity/quality checks and the most common PDF-course
+  margins (wordcount range, required sections, banned-phrase
+  list). More elaborate rules (sentiment score, reading level,
+  LLM-judged prose quality) are one provider-pattern away and
+  don't require touching this evaluator — they can register
+  under a separate `runAiJudgedCriteria` extension if/when
+  needed.
+- **Gated targets are fixed (`in_review`, `final`, `published`).**
+  Domain profiles using custom states like `continuity_passed`
+  are not gated by default — the operator maps them to a
+  canonical state to opt in. This keeps the default contract
+  predictable and prevents a one-off custom state from
+  accidentally becoming a silent gate.
+- **Bypass is board-only, URL-level, and audit-logged.** We
+  resisted making bypass a body flag because URL-level is
+  visible in HTTP access logs, shows up verbatim in `curl`
+  examples, and is hard to accidentally hide behind abstraction.
+  Agents can never bypass — that's the whole point.
+- **No retry / auto-fix loop.** When a writer agent gets a 422,
+  it's the agent's job to fix the content and retry. Building
+  auto-retry into the server would couple the gate to specific
+  adapter behaviors.
+- **Evaluator ignores invalid criteria values** rather than
+  throwing. Partial / experimental criteria shouldn't break the
+  whole work product — bad rules are no-ops. Operators get a
+  clean "passed" instead of a cryptic 500.
+
 ## What Should Be Done Next
 
 Content-factory milestones come first (they unlock the Neuroxcel
 workflows); deployment-hardening follow-ups continue in parallel.
 
-1. **M6 — Vertical polish**
-   - Novel factory: continuity-check as a required review gate before
-     `draft → in_review`; Bible-update workflow where lore-keeper
-     proposes canon additions.
-   - Course factory: wire cost service → per-product margin tracking.
-   - Board UI panel on a content work product showing the live run via
-     the M3a SSE tail + `paperclipai run --tail` CLI subcommand.
+1. **M6 — Vertical polish (remaining)**
+   - ✅ Continuity-check enforcement — shipped as the pass-criteria
+     gate. Novel factory: author a template with
+     `requiredHeadings: ["Beats", "Resolution"]` and a wordcount
+     range, and the gate enforces it.
+   - Novel factory: Bible-update workflow where lore-keeper proposes
+     canon additions (separate approval flow).
+   - Course factory: wire cost service → per-product margin
+     tracking.
+   - Board UI panel on a content work product showing the live run
+     via the M3a SSE tail + `paperclipai run --tail` CLI subcommand.
 
 2. **Content-factory follow-ups (small, can land anytime)**
    - Per-work-product context-pack hydration: when a wake targets an
@@ -723,6 +816,20 @@ workflows); deployment-hardening follow-ups continue in parallel.
 - New env vars: `PAPERCLIP_PUBLISHING_ALLOW_HTTP` and
   `PAPERCLIP_PUBLISHING_ALLOW_PRIVATE`. Additive, opt-in, default
   to the safe value.
+- `packages/shared/src/content-pass-criteria.ts` — new module
+  exporting `evaluatePassCriteria`, `isGatedTransition`, etc.
+  Trivial merge risk.
+- `server/src/services/content-work-products.ts` — this file was
+  already a fork addition (M1), so upstream can't conflict
+  directly. Internal change: `update`, `addVersion`, and `publish`
+  grew an optional `gate` parameter; a new `PassCriteriaError`
+  class extends the existing `HttpError`. `evaluateCriteria`
+  method added at the end of the service object.
+- `server/src/routes/content-work-products.ts` — threads `gate`
+  through the mutation routes and adds a
+  `GET /content-work-products/:id/pass-criteria` endpoint.
+  `?bypass=true` is honored only for board actors via the new
+  `resolveGateBypass` helper.
 - New files (`deployment-readiness.ts`, new tests) will not conflict with
   upstream by construction.
 

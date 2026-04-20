@@ -394,6 +394,110 @@ POST /api/content-templates/{id}/instantiate
 
 ---
 
+## Pass Criteria Gate
+
+Content work products can enforce quality gates at status-transition
+time. When a work product's `metadata.passCriteria` is set (usually
+copied from the template it was instantiated from), the server
+refuses any transition into `in_review`, `final`, or `published` if
+the criteria aren't met. Templates instantiated with
+`passCriteria` carry the rules forward automatically.
+
+### Supported criteria
+
+| Key | Type | Meaning |
+|-----|------|---------|
+| `minWordcount` | number | body must have ≥ N words |
+| `maxWordcount` | number | body must have ≤ N words |
+| `requiredTags` | string[] | every tag must be present on the WP |
+| `requiredHeadings` | string[] | every string must appear as a markdown heading (case-insensitive) |
+| `forbiddenPhrases` | string[] | none may appear in body (case-insensitive substring) |
+
+Unknown keys are ignored — domain profiles can extend the vocabulary
+without a schema migration or server upgrade.
+
+Transitions to `draft` or `archived` are always allowed. Custom
+snake_case states (e.g. `continuity_passed`, `layout_ready`) are
+unaffected — operators opt into enforcement by mapping them to one
+of the gated canonical states.
+
+### Dry-run before transitioning
+
+```
+GET /api/content-work-products/{id}/pass-criteria
+→ {
+    "hasCriteria": true,
+    "criteria": { "minWordcount": 3000, "requiredHeadings": ["Beats"] },
+    "result": {
+      "passed": false,
+      "failures": [
+        { "code": "min_wordcount", "message": "Word count 1840 is below minimum 3000",
+          "details": { "wordcount": 1840, "minWordcount": 3000 } }
+      ],
+      "stats": { "wordcount": 1840, "headings": ["Intro"], "tags": ["novel"] }
+    },
+    "evaluatedAgainstVersionNumber": 2
+  }
+```
+
+Agents should call this before requesting a gated transition — it
+tells them exactly which rules are blocking advancement so they can
+fix the underlying content instead of failing at write time.
+
+### Blocked transition shape
+
+When an `addVersion` with `advanceStatusTo`, a `PATCH status`, or a
+`publish` is refused, the server returns:
+
+```
+HTTP/1.1 422 Unprocessable Entity
+{
+  "error": "Content work product cannot advance to \"in_review\": Word count 1840 is below minimum 3000",
+  "details": {
+    "code": "pass_criteria_failed",
+    "targetStatus": "in_review",
+    "failures": [ { "code": "min_wordcount", ... } ],
+    "stats": { "wordcount": 1840, ... }
+  }
+}
+```
+
+### Bypass (board only)
+
+Board users can bypass the gate by adding `?bypass=true` on any of
+the three gated endpoints:
+
+```
+PATCH /api/content-work-products/{id}?bypass=true
+POST  /api/content-work-products/{id}/versions?bypass=true
+POST  /api/content-work-products/{id}/publish?bypass=true
+```
+
+Agents cannot bypass — the `?bypass=true` query is silently ignored
+for any non-board actor. Every bypass is recorded in the activity
+log as `gateBypass: true`.
+
+### Factory loop with criteria
+
+```
+# Operator defines a template with criteria
+POST /api/companies/{id}/content-templates {
+  "passCriteria": { "minWordcount": 3000, "requiredHeadings": ["Beats"] },
+  ...
+}
+
+# Instantiate → work product carries the criteria
+POST /api/content-templates/{id}/instantiate { ... }
+
+# Writer drafts → agent dry-runs before promoting
+GET  /api/content-work-products/{wpId}/pass-criteria
+POST /api/content-work-products/{wpId}/versions
+  { "body": "...", "advanceStatusTo": "in_review" }
+# → 422 if criteria fail; agent fixes and retries.
+```
+
+---
+
 ## Publishing Targets
 
 A publishing target is an external destination a content work product

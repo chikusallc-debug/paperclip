@@ -238,6 +238,37 @@ POST /api/companies/{companyId}/context-packs/preview?projectId={projectId}
 
 Useful when experimenting with rule sets before saving them.
 
+### Auto-hydration at wake-time
+
+Operators attach packs to an agent by setting
+`runtimeConfig.contextPackIds: string[]` on the agent. On every wake,
+the server resolves each pack, merges them (dedup by doc id, first
+occurrence wins), and injects the result as an env var on the adapter
+run:
+
+```
+PAPERCLIP_CONTEXT_PACK_JSON={"name":"chapter-12-context",
+  "rulesApplied":{"includeKinds":["character","style_guide"]},
+  "documents":[{"id":"...","path":"characters/elena.md",
+                "title":"Elena","kind":"character",
+                "tags":["pov:elena"],"frontmatter":{...},
+                "body":"# Elena\n\n...","format":"markdown",
+                "updatedAt":"..."}],
+  "totalMatched":12,"truncated":false,"missingPackIds":[]}
+```
+
+**What agents should do:** at the start of every run, if
+`$PAPERCLIP_CONTEXT_PACK_JSON` is set, parse it and treat its
+`documents[]` as authoritative reference material for the run.
+Prefer this over calling `/context-packs/:id/resolve` manually —
+auto-hydration is cheaper (one DB round trip at wake-time instead of
+another API call from inside the run) and always consistent with the
+pack rules the operator set.
+
+If a pack referenced by `contextPackIds` doesn't exist or belongs to
+another company, the server silently skips it and surfaces the id in
+`missingPackIds` so operators can spot stale references in run logs.
+
 ---
 
 ## Recommended factory loops

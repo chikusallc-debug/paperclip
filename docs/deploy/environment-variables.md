@@ -46,6 +46,7 @@ These are set automatically by the server when invoking agents:
 | `PAPERCLIP_APPROVAL_ID` | Resolved approval ID |
 | `PAPERCLIP_APPROVAL_STATUS` | Approval decision |
 | `PAPERCLIP_LINKED_ISSUE_IDS` | Comma-separated linked issue IDs |
+| `PAPERCLIP_CONTEXT_PACK_JSON` | Resolved context-pack JSON, auto-injected when `agent.runtimeConfig.contextPackIds` is set. Shape: `{ name, rulesApplied, documents[], totalMatched, truncated, missingPackIds[] }`. Content-factory agents should read this at the start of the run. |
 
 ## LLM Provider Keys (for adapters)
 

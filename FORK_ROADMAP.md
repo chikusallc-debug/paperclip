@@ -27,7 +27,7 @@ milestone.
 | M1 | Content Work Products + Versions core | **shipped** |
 | M2 | Knowledge Base + Context Packs | **shipped** |
 | M3a | Live Run SSE tail | **shipped** |
-| M3b | Prompt auto-hydration (context packs into wake prompts) | planned |
+| M3b | Prompt auto-hydration (context packs into wake prompts) | **shipped** |
 | M4 | Content Templates (reusable per type) | planned |
 | M5 | Publishing Targets + Attempts | planned |
 | M6 | Vertical polish (continuity gate, pricing/margin) | planned |
@@ -346,42 +346,102 @@ Design tradeoffs:
   deployments; when we outgrow it, Redis pub/sub slots in behind
   the same `subscribeCompanyLiveEvents` interface.
 
+### 5. Context-pack auto-hydration (M3b, shipped)
+
+Problem: M2 shipped the Knowledge Base + Context Pack primitives,
+but agents still had to remember to call
+`POST /context-packs/:id/resolve` inside every run. One forgotten
+call = canon drift, which is exactly the failure mode the KB was
+designed to prevent. The payoff of M2's deterministic rules was
+locked behind a manual API call.
+
+Shipped:
+
+- New `hydrateForAgent({ companyId, runtimeConfig })` method on
+  `contextPackService`. Reads
+  `runtimeConfig.contextPackIds: string[]`, resolves each pack
+  via the existing `resolve()` path (so project-over-company
+  shadowing and `maxDocs` capping still apply), merges results
+  into a single resolution with dedup-by-doc-id (first occurrence
+  wins) and union of applied rules. Missing / cross-tenant pack
+  ids are silently skipped and returned in a `missingPackIds`
+  array so operators can spot stale references.
+- `buildPaperclipEnv(agent, context?)` in `@paperclipai/adapter-utils`
+  now accepts the adapter context as an optional second arg. If
+  `context.paperclipContextPack` is present, the helper serializes
+  it into `PAPERCLIP_CONTEXT_PACK_JSON`. All six local adapters
+  (claude, codex, cursor, gemini, opencode, pi) pass `context`
+  through — a single-line change each. Gateway adapter skipped for
+  now (it talks to an external service).
+- Heartbeat execution path calls `hydrateForAgent` right before
+  the adapter invoke, sets `context.paperclipContextPack`, and
+  emits a `context_pack.hydrated` run event so operators see the
+  hydration in the SSE tail shipped in M3a. Hydration errors are
+  logged and silently degraded — they never block a run.
+- Skill update: `content-factory.md` now documents the auto-hydration
+  contract and tells agents to prefer `$PAPERCLIP_CONTEXT_PACK_JSON`
+  over manual resolve calls. `docs/deploy/environment-variables.md`
+  gets a new row.
+- Tests: 7 cases for `buildPaperclipEnv` (base, missing context,
+  falsy pack, happy-path serialize, cyclic-safe, LISTEN_HOST
+  handling, explicit API_URL override). 5 embedded-pg cases for
+  `hydrateForAgent` (empty config, single pack, multi-pack merge
+  with dedup, missing-id reporting, cross-tenant-safe skip).
+
+Design tradeoffs:
+
+- **Stored in `runtimeConfig` jsonb, not a new column.** Operators
+  attach packs to an agent by PATCHing its runtimeConfig — no
+  migration, no new API. The tradeoff is that the field is untyped
+  at the DB level; typed helpers will come with the eventual agent
+  runtime-config schema overhaul (not in scope for the content
+  factory plan).
+- **Hydration failures are non-fatal.** A stale pack id, a DB
+  blip, a rules validation edge case — none of these should cause
+  a creative run to fail. The run proceeds without
+  `PAPERCLIP_CONTEXT_PACK_JSON`; the operator sees the warning in
+  the run event stream.
+- **Gateway adapter intentionally not updated.** The
+  `openclaw-gateway` adapter has its own `buildPaperclipEnvForWake`
+  shim because it forwards to an external service. Exposing pack
+  JSON through an external gateway is a larger design question
+  (request size, security, data residency) and belongs in a future
+  milestone.
+- **Did not add adapter-side skill files.** A per-adapter skill
+  that instructs each CLI to read the env var would be even more
+  seamless, but it would fragment the canonical skill reference.
+  Instead, the shared `content-factory.md` reference tells every
+  agent to read `$PAPERCLIP_CONTEXT_PACK_JSON` — Hermes, Claude
+  Code, OpenClaw all see the same contract.
+
 ## What Should Be Done Next
 
 Content-factory milestones come first (they unlock the Neuroxcel
 workflows); deployment-hardening follow-ups continue in parallel.
 
-1. **M3b — Prompt auto-hydration**
-   - Add a `contextPackIds: string[]` field to agent runtime config so
-     operators can attach packs without a migration.
-   - At wake-time, server resolves every attached pack, concatenates,
-     and sets `PAPERCLIP_CONTEXT_PACK_JSON` on the adapter execution
-     context (alongside the existing `PAPERCLIP_WAKE_PAYLOAD_JSON`).
-   - Update the content-factory skill to instruct agents to read
-     `$PAPERCLIP_CONTEXT_PACK_JSON` at the start of each run.
-   - Board UI panel on a content work product showing the live run
-     via the M3a SSE tail.
-   - `paperclipai run --tail` CLI subcommand.
-
-2. **M4 — Content Templates**
+1. **M4 — Content Templates**
    - Company-scoped templates bundling outline + section prompts + pass
      criteria for a content type. "PDF course" and "Novel chapter" stop
-     being reinvented per project.
+     being reinvented per project. Templates reference a default
+     `contextPackIds[]` so hydration is automatic when the template is
+     instantiated.
    - Export/import via the existing `companies.sh` portability layer.
 
-3. **M5 — Publishing Targets + Attempts**
+2. **M5 — Publishing Targets + Attempts**
    - Configurable destinations (Gumroad, Substack, R2, GitHub, your
      CMS), credentials via existing company secrets.
    - Idempotent `POST /api/content-work-products/:id/publish-to/:targetId`
      with audit log.
 
-4. **M6 — Vertical polish**
+3. **M6 — Vertical polish**
    - Novel factory: continuity-check as a required review gate before
      `draft → in_review`; Bible-update workflow where lore-keeper
      proposes canon additions.
    - Course factory: wire cost service → per-product margin tracking.
+   - Board UI panel on a content work product showing the live run via
+     the M3a SSE tail + `paperclipai run --tail` CLI subcommand.
 
-5. **Ongoing — deployment hardening follow-ups**
+4. **Ongoing — deployment hardening follow-ups**
    - Secret master-key rotation + per-agent/per-routine secret scoping.
    - `/metrics` Prometheus exposition + Grafana dashboard.
    - Rate limiter on `/api/auth`, invite creation, board claim.
@@ -433,6 +493,22 @@ workflows); deployment-hardening follow-ups continue in parallel.
   `agents.ts`. Merge risk: trivial (new file; one-line mount in
   `app.ts`). If upstream ever adds their own streaming endpoint at
   `/heartbeat-runs/:runId/events/stream`, we rename the route.
+- `packages/adapter-utils/src/server-utils.ts` — `buildPaperclipEnv`
+  signature gained an optional second arg and a guarded pack-JSON
+  branch. **Medium risk** because this file is on upstream's hot path
+  (every adapter uses it); a signature change must stay
+  backwards-compatible, which it is (arg is optional). Conflict shape
+  is predictable — a local re-apply of the `if (context && ...)` block
+  should be enough.
+- Six adapter `execute.ts` files each got a one-token change:
+  `buildPaperclipEnv(agent)` → `buildPaperclipEnv(agent, context)`.
+  Low risk; easy to re-apply per file. Gateway adapter deliberately
+  skipped.
+- `server/src/services/heartbeat.ts` got one import
+  (`contextPackService`) and an inline hydration block before the
+  `adapter.execute` call. **Medium risk** — upstream changes the
+  pre-execute path often. If the block conflicts, the insertion point
+  is clearly marked with a "Auto-hydrate context packs" comment.
 - New files (`deployment-readiness.ts`, new tests) will not conflict with
   upstream by construction.
 

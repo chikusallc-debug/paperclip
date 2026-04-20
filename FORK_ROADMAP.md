@@ -31,6 +31,7 @@ milestone.
 | M4 | Content Templates (reusable per type) | **shipped** |
 | M5 | Publishing Targets + Attempts (webhook provider) | **shipped** |
 | M6 (slice) | Pass-criteria gate (content quality enforcement) | **shipped** |
+| follow-up | Per-work-product context-pack hydration | **shipped** |
 | M5 | Publishing Targets + Attempts | planned |
 | M6 | Vertical polish (continuity gate, pricing/margin) | planned |
 
@@ -685,6 +686,70 @@ Design tradeoffs:
   whole work product — bad rules are no-ops. Operators get a
   clean "passed" instead of a cryptic 500.
 
+### 9. Per-work-product context-pack hydration (follow-up, shipped)
+
+Problem: M3b hydrated agent-level packs; M4 stored template-derived
+pack ids in `workProduct.metadata.contextPackIds` — but the two
+never met. A single Writer agent working across many chapters
+either had to see the same static agent-level packs (can't carry
+per-chapter canon), or the operator had to swap
+`agent.runtimeConfig` before every wake (defeats the factory).
+
+Shipped:
+
+- `contextPackService.hydrateForAgent` gained an optional
+  `additionalPackIds: string[]` parameter. Merged with the agent's
+  runtime-config pack ids (agent first for name composition),
+  deduplicated by pack id so overlapping lists only resolve
+  once.
+- `contentWorkProductService.getLatestForIssue(companyId, issueId)`
+  — most-recently-updated WP bound to a given issue.
+- `contentWorkProductService.extractContextPackIdsFromMetadata`
+  — tolerant reader of `metadata.contextPackIds` that filters out
+  empty strings, non-string entries, and non-array metadata so
+  the heartbeat never chokes on malformed data.
+- Heartbeat wake path: when `context.issueId` is set, look up the
+  WP for the issue, pull its metadata pack ids, pass to
+  `hydrateForAgent` as `additionalPackIds`. The
+  `context_pack.hydrated` run event now carries `workProductId`
+  and `workProductPackCount` so operators can see which
+  chapter's canon hydrated for a given run.
+- Cross-tenant safety: the same pack-id → owning-company check
+  the agent-level hydration already does applies unchanged to WP
+  packs. Pack ids from another company (however they got onto
+  the WP metadata) are reported in `missingPackIds` and never
+  resolve.
+- Skill reference updated: the "Auto-hydration at wake-time"
+  section now documents both sources and their merge semantics.
+- Tests: 4 new embedded-pg hydration cases (additionalPackIds
+  alone, union with dedup, same-pack-in-both-lists resolved once,
+  cross-tenant additionalPackIds treated as missing), 5 new pure
+  unit tests for `extractContextPackIdsFromMetadata` (null /
+  malformed / non-string entries / fresh array). Non-pg: 5/5 pass
+  locally.
+
+Design tradeoffs:
+
+- **Most-recently-updated WP wins** when an issue has multiple
+  work products. Simple, predictable, no need for a new join
+  column. If multi-WP-per-issue becomes common we can upgrade to
+  a primary pointer later without breaking the API.
+- **Agent packs + WP packs are unioned, not replaced.** The two
+  layers are complementary — agent packs are persistent (brand
+  voice), WP packs are per-instance (chapter canon). A future
+  profile that wants WP packs to *shadow* agent packs can opt in
+  by marking agent packs as reference-only — orthogonal to this
+  milestone.
+- **Looked up synchronously before the adapter invoke.** Extra
+  DB round trip per wake, but only when the wake has an issueId;
+  measured cost is one indexed query (company_id, issue_id).
+  Background / cached resolution not worth the complexity here.
+- **Metadata schema not promoted to a column.** The pack ids
+  stay in `metadata.contextPackIds` so existing WPs and templates
+  work unchanged. If we ever need per-WP pack references as
+  first-class foreign keys (e.g., for referential integrity on
+  pack delete), a dedicated junction table is a clean follow-up.
+
 ## What Should Be Done Next
 
 Content-factory milestones come first (they unlock the Neuroxcel
@@ -703,9 +768,7 @@ workflows); deployment-hardening follow-ups continue in parallel.
      via the M3a SSE tail + `paperclipai run --tail` CLI subcommand.
 
 2. **Content-factory follow-ups (small, can land anytime)**
-   - Per-work-product context-pack hydration: when a wake targets an
-     issue whose content work product has `metadata.contextPackIds`,
-     hydrate those too (in addition to the agent's packs).
+   - ✅ Per-work-product context-pack hydration — shipped.
    - Portability extension: include content templates, work products,
      KB docs, and context packs (and publishing targets, minus
      secretId) in `companyPortabilityService` export/import manifests.
@@ -830,6 +893,18 @@ workflows); deployment-hardening follow-ups continue in parallel.
   `GET /content-work-products/:id/pass-criteria` endpoint.
   `?bypass=true` is honored only for board actors via the new
   `resolveGateBypass` helper.
+- `server/src/services/context-packs.ts` — `hydrateForAgent`
+  signature gained an optional `additionalPackIds` param.
+  Backwards-compatible for existing call sites.
+- `server/src/services/content-work-products.ts` — additive
+  `getLatestForIssue` + `extractContextPackIdsFromMetadata`
+  methods. Internal helpers, low conflict surface.
+- `server/src/services/heartbeat.ts` — additional import
+  (`contentWorkProductService`) and an inline WP-lookup block
+  inside the existing "Auto-hydrate context packs" try/catch.
+  **Medium risk** — lives on a frequently-touched upstream path.
+  Insertion point is clearly commented; the added WP lookup is
+  short and trivial to re-apply on a rebase.
 - New files (`deployment-readiness.ts`, new tests) will not conflict with
   upstream by construction.
 

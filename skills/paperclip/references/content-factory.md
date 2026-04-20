@@ -240,9 +240,22 @@ Useful when experimenting with rule sets before saving them.
 
 ### Auto-hydration at wake-time
 
-Operators attach packs to an agent by setting
-`runtimeConfig.contextPackIds: string[]` on the agent. On every wake,
-the server resolves each pack, merges them (dedup by doc id, first
+Two sources of pack ids merge automatically at wake time:
+
+1. **Agent-level:** `runtimeConfig.contextPackIds: string[]` on the
+   agent. Useful for persistent packs every run of this agent needs
+   — series bible, brand voice, core style guide.
+2. **Work-product-level:** `metadata.contextPackIds` on the content
+   work product bound to the wake's issue. Usually populated by M4
+   template instantiation (`defaultContextPackIds` +
+   `extraContextPackIds` union at instantiate time). This is how a
+   single Writer agent working on many chapters sees per-chapter
+   canon — chapter 12's pack for a chapter-12 wake, chapter 13's
+   pack for a chapter-13 wake.
+
+Both lists are merged (agent first, then WP), deduplicated by pack
+id, resolved, and deduped again at the document level. The server
+then resolves each pack, merges them (dedup by doc id, first
 occurrence wins), and injects the result as an env var on the adapter
 run:
 
@@ -268,6 +281,14 @@ pack rules the operator set.
 If a pack referenced by `contextPackIds` doesn't exist or belongs to
 another company, the server silently skips it and surfaces the id in
 `missingPackIds` so operators can spot stale references in run logs.
+Cross-tenant pack ids (whether on the agent or the work product)
+are treated the same way — the server never resolves a pack from
+another company regardless of which list referenced it.
+
+The `context_pack.hydrated` run event (visible in the M3a SSE tail)
+includes `workProductId` and `workProductPackCount` when the wake
+pulled in WP-scoped packs, so operators can see exactly which
+chapter's canon hydrated for a given run.
 
 ---
 

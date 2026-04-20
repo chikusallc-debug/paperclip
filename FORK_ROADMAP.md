@@ -28,7 +28,7 @@ milestone.
 | M2 | Knowledge Base + Context Packs | **shipped** |
 | M3a | Live Run SSE tail | **shipped** |
 | M3b | Prompt auto-hydration (context packs into wake prompts) | **shipped** |
-| M4 | Content Templates (reusable per type) | planned |
+| M4 | Content Templates (reusable per type) | **shipped** |
 | M5 | Publishing Targets + Attempts | planned |
 | M6 | Vertical polish (continuity gate, pricing/margin) | planned |
 
@@ -414,32 +414,109 @@ Design tradeoffs:
   agent to read `$PAPERCLIP_CONTEXT_PACK_JSON` — Hermes, Claude
   Code, OpenClaw all see the same contract.
 
+### 6. Content Templates (M4, shipped)
+
+Problem: Each new novel chapter or PDF course section required
+operators to re-enter the same scaffolding — type, slug pattern,
+default tags, wordcount target, outline shape, which context packs
+to attach. At factory scale this is both tedious and drift-prone
+(one operator defines chapter 12 differently from chapter 13).
+
+Shipped:
+
+- New `content_templates` table (migration `0060_fork_content_
+  templates`) capturing name, type/kind, `titleTemplate`,
+  `slugTemplate`, default status/tags/metadata,
+  `defaultContextPackIds` (unioned into the instantiated work
+  product's metadata), optional `outlineBody` (markdown skeleton
+  inlined as v1 when present), and a freeform `passCriteria`
+  payload. Name is kebab-case and unique per company.
+- Shared `ContentTemplate` type plus validators:
+  `contentTemplateNameSchema` (kebab-case),
+  `createContentTemplateSchema`,
+  `updateContentTemplateSchema` (strict — unknown fields rejected),
+  `instantiateContentTemplateSchema` (variables + strict overrides).
+- `contentTemplateService`: CRUD + `instantiate(templateId, {
+  variables, overrides }, actor)` which interpolates
+  `titleTemplate`, `slugTemplate`, and `outlineBody`, applies
+  overrides, and delegates to `contentWorkProductService.create`.
+  The resulting work product's metadata records the template id
+  and name (for traceability) and the union of the template's
+  `defaultContextPackIds` with `overrides.extraContextPackIds`.
+- `interpolateTemplate(template, variables)` — deliberately tiny
+  substitution engine. Only top-level identifiers, no nested
+  lookups, no expressions. Missing variables render as empty
+  string (forgiving for partial runs), numbers coerce naturally.
+  Kept simple because factory-driving templates must stay
+  auditable — not Turing-complete.
+- REST API:
+    GET    /api/companies/:id/content-templates
+    POST   /api/companies/:id/content-templates
+    GET    /api/content-templates/:id
+    PATCH  /api/content-templates/:id
+    DELETE /api/content-templates/:id
+    POST   /api/content-templates/:id/instantiate
+- Skill doc updated: `content-factory.md` gets a "Content
+  Templates" section with a worked factory-loop example.
+- Tests: 12 validator, 7 interpolation unit, 8 route (mocked
+  service), 8 embedded-pg service (create + name uniqueness,
+  list filters, instantiate with variable interpolation + tag
+  union + metadata merge, pack-id union across defaults +
+  overrides, refuse empty-title templates, overrides.title
+  supersedes, cross-tenant safety). 27/27 non-pg pass locally.
+
+Design tradeoffs:
+
+- **Pass criteria stored but not enforced.** M4 just persists
+  `passCriteria` on the template and copies it into the work
+  product's metadata. Enforcement (blocking `draft → in_review`
+  when criteria aren't met) is scoped for M6 since it requires
+  a rules-evaluation engine and specific factory profiles to be
+  meaningful.
+- **Templates are the only source of `contextPackIds` at
+  work-product scope for now.** Per-work-product hydration
+  (agent wake reads packs from the issue's work product) is a
+  natural follow-up: the data is already on the work product
+  metadata; the heartbeat wake just needs to look it up. Left
+  out of M4 to keep the diff surgical.
+- **No portability integration in M4.** Exporting templates via
+  `companies.sh` would require extending the portability
+  manifest schema, which is out of scope here. Templates are
+  regular company-scoped rows and can be exported via a
+  follow-up extension of `companyPortabilityService`.
+- **One migration + one service, intentionally.** Templates
+  could have been modeled as a `content_work_products` row with
+  `kind: "template"` — it was tempting for schema economy but
+  would have forced hacky status values and broken the "immutable
+  version body" invariant. A dedicated table is worth the
+  migration.
+
 ## What Should Be Done Next
 
 Content-factory milestones come first (they unlock the Neuroxcel
 workflows); deployment-hardening follow-ups continue in parallel.
 
-1. **M4 — Content Templates**
-   - Company-scoped templates bundling outline + section prompts + pass
-     criteria for a content type. "PDF course" and "Novel chapter" stop
-     being reinvented per project. Templates reference a default
-     `contextPackIds[]` so hydration is automatic when the template is
-     instantiated.
-   - Export/import via the existing `companies.sh` portability layer.
-
-2. **M5 — Publishing Targets + Attempts**
+1. **M5 — Publishing Targets + Attempts**
    - Configurable destinations (Gumroad, Substack, R2, GitHub, your
      CMS), credentials via existing company secrets.
    - Idempotent `POST /api/content-work-products/:id/publish-to/:targetId`
      with audit log.
 
-3. **M6 — Vertical polish**
+2. **M6 — Vertical polish**
    - Novel factory: continuity-check as a required review gate before
      `draft → in_review`; Bible-update workflow where lore-keeper
      proposes canon additions.
    - Course factory: wire cost service → per-product margin tracking.
    - Board UI panel on a content work product showing the live run via
      the M3a SSE tail + `paperclipai run --tail` CLI subcommand.
+
+3. **Content-factory follow-ups (small, can land anytime)**
+   - Per-work-product context-pack hydration: when a wake targets an
+     issue whose content work product has `metadata.contextPackIds`,
+     hydrate those too (in addition to the agent's packs).
+   - Portability extension: include content templates, work products,
+     KB docs, and context packs in `companyPortabilityService` export/
+     import manifests.
 
 4. **Ongoing — deployment hardening follow-ups**
    - Secret master-key rotation + per-agent/per-routine secret scoping.
@@ -509,6 +586,18 @@ workflows); deployment-hardening follow-ups continue in parallel.
   `adapter.execute` call. **Medium risk** — upstream changes the
   pre-execute path often. If the block conflicts, the insertion point
   is clearly marked with a "Auto-hydrate context packs" comment.
+- `packages/db/src/migrations/0060_fork_content_templates.sql` +
+  journal entry; `packages/db/src/schema/content_templates.ts` —
+  **medium risk** (migration-slot collision). Same `fork_` naming
+  convention makes conflicts obvious.
+- `packages/shared/src/{index,types/index,validators/index}.ts` — the
+  usual additive exports for `ContentTemplate` + validators. Trivial.
+- `server/src/services/content-templates.ts` +
+  `server/src/routes/content-templates.ts` — new files, trivial.
+  `services/index.ts`, `routes/index.ts`, `app.ts` each get one line.
+- `skills/paperclip/references/content-factory.md` — appended a
+  "Content Templates" section before the existing "Live Run Tail"
+  section. Low risk (our own file within a fork-specific reference).
 - New files (`deployment-readiness.ts`, new tests) will not conflict with
   upstream by construction.
 

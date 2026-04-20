@@ -300,6 +300,100 @@ another company, the server silently skips it and surfaces the id in
 
 ---
 
+## Content Templates
+
+Reusable blueprints that turn "define a novel chapter" or "define a
+PDF course section" into a single instantiate call. A template
+captures: target type/kind, a `titleTemplate` (and optional
+`slugTemplate`) with `{{variable}}` interpolation, default tags +
+metadata, default context pack ids (so auto-hydration carries the
+right canon for anything instantiated from this template), an
+optional markdown `outlineBody` that becomes the first version, and
+a freeform `passCriteria` payload for future enforcement.
+
+### Create a template
+
+```
+POST /api/companies/{companyId}/content-templates
+{
+  "name": "novel-chapter",                   // kebab-case, unique per company
+  "description": "Standard chapter skeleton",
+  "type": "novel_chapter",
+  "kind": "content",                          // or "reference"
+  "titleTemplate": "Chapter {{n}}: {{title}}",
+  "slugTemplate": "chapter-{{n}}",            // optional
+  "defaultStatus": "draft",
+  "defaultTags": ["novel"],
+  "defaultMetadata": { "wordcountTarget": 5000 },
+  "defaultContextPackIds": ["<pack-uuid>"],   // auto-hydrate these
+  "outlineBody": "# Chapter {{n}}\n\nPOV: {{pov}}\n\n## Beats\n- ...",
+  "passCriteria": { "minWordcount": 3000 }    // stored only in M4
+}
+```
+
+### Read / list / update / delete
+
+```
+GET    /api/companies/{companyId}/content-templates?type=novel_chapter
+GET    /api/content-templates/{id}
+PATCH  /api/content-templates/{id}
+DELETE /api/content-templates/{id}
+```
+
+`PATCH` is strict — unknown fields are rejected.
+
+### Instantiate
+
+```
+POST /api/content-templates/{id}/instantiate
+{
+  "variables": { "n": 12, "title": "Arrival", "pov": "elena" },
+  "overrides": {
+    "projectId": "{projectId}",
+    "issueId": "{issueId}",                   // optional attach
+    "tags": ["act:2"],                         // unioned with defaults
+    "extraContextPackIds": ["<pack-uuid>"],   // unioned with defaults
+    "metadata": { "deadline": "2026-05-01" }  // merged over defaults
+    // "title" and "slug" may also override the rendered values
+  }
+}
+```
+
+Returns `{ template, workProduct }`. The work product records:
+
+- `metadata.templateId`, `metadata.templateName` — traceability
+- `metadata.contextPackIds` — union of template defaults + overrides
+- `metadata.passCriteria` — present if the template defined it
+- v1 body = interpolated `outlineBody` (when the template has one)
+
+Interpolation rules (deliberately tiny, auditable):
+
+- `{{identifier}}` with optional whitespace inside the braces
+- Only top-level identifiers (no nested lookups, no expressions)
+- Missing variables render as empty string — forgiving for partial
+  factory runs
+- Numbers coerce to string naturally (e.g. `n: 12` → `"12"`)
+
+### Factory loop with a template
+
+```
+# Operator: define the template once per content type
+POST /api/companies/{companyId}/content-templates { ... }
+
+# Every new chapter/section:
+POST /api/content-templates/{id}/instantiate
+  { "variables": { "n": N, ... }, "overrides": { "projectId": ... } }
+
+# The new work product is already seeded with:
+#   - right type, title, slug, status
+#   - tags + metadata from the template
+#   - defaultContextPackIds recorded in metadata
+#   - v1 body = interpolated outline
+# Agents then add versions on handoff as usual.
+```
+
+---
+
 ## Live Run Tail (SSE)
 
 Operators and sibling agents can watch a run in real time:

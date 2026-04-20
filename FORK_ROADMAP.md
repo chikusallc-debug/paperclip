@@ -32,6 +32,13 @@ milestone.
 | M5 | Publishing Targets + Attempts (webhook provider) | **shipped** |
 | M6 (slice) | Pass-criteria gate (content quality enforcement) | **shipped** |
 | follow-up | Per-work-product context-pack hydration | **shipped** |
+| CLI | `paperclipai heartbeat tail <runId>` | **shipped** |
+| ops | Prometheus `/metrics` endpoint | **shipped** |
+| hardening | Secret master-key rotation + verify CLI | **shipped** |
+| M5 (extra) | Dedicated GitHub publishing provider | **shipped** |
+| M6 | Bible-update proposal / apply workflow | **shipped** |
+| M6 | Per-content-work-product margin tracking | **shipped** |
+| M6 | Board UI run-event stream panel (untested in browser) | **code-only** |
 | M5 | Publishing Targets + Attempts | planned |
 | M6 | Vertical polish (continuity gate, pricing/margin) | planned |
 
@@ -749,6 +756,97 @@ Design tradeoffs:
   work unchanged. If we ever need per-WP pack references as
   first-class foreign keys (e.g., for referential integrity on
   pack delete), a dedicated junction table is a clean follow-up.
+
+### 10. Factory operator batch (shipped together)
+
+Seven items landed as a single sequenced push after the core factory
+(M1–M6 slice + per-WP hydration) was functionally complete. Each
+shipped with tests and pushed before the next started.
+
+**CLI live tail** (`paperclipai heartbeat tail <runId>`):
+colour-formatted terminal client for the M3a SSE endpoint, with
+`--from-seq` for reconnect resume, `--event-type` filtering,
+`--json` for pipe-to-jq, and clean SIGINT disconnection. No extra
+deps; thin wrapper around fetch + the existing CLI auth context.
+
+**Prometheus `/metrics`**: narrow, opinionated text-exposition
+endpoint with heartbeat run counts by status, active queued/running
+gauge, publish attempt totals, process memory, and build info.
+Board-only via assertBoard; env off-switch
+`PAPERCLIP_METRICS_DISABLED`; 503 with a commented-metric body on
+collection failure so scrapers see the error without a 500.
+
+**Secret master-key rotation** (`paperclipai secrets verify` +
+`paperclipai secrets rotate-master-key`): re-encrypt every
+local_encrypted secret under a new key with a dry-run-by-default
+pipeline. Pre-flight verify with the OLD key fails loudly if any
+row wouldn't decrypt (catches silent corruption before it bakes
+in). On --apply, atomic key-file swap. Supports --generate,
+--new-key-file, --new-key (inline b64/hex), --database-url, --json.
+
+**GitHub publishing provider**: Contents API provider (owner/
+repo/branch/path/message with {{var}} interpolation, optional
+committer, GHE apiBaseUrl override) registered alongside webhook.
+GET-for-sha → PUT-with-sha gives idempotent republish. Same SSRF
+guard as webhook, including private-IP rejection for GHE
+appliances (env override available). Auth header redacted from
+the persisted attempt row.
+
+**Bible-update workflow**: proposals are regular content work
+products (type=bible_update_proposal) that flow through
+draft → in_review like anything else. Board operators approve
+by calling a new apply endpoint which atomically writes the
+proposal's latest body to the target KB doc and flips the
+proposal to status=applied. Three apply modes: replace (auto-
+creates the target doc), append / prepend (require an existing
+target — refuses to silently create on non-replace).
+
+**Per-content-work-product margin tracking**:
+`GET /content-work-products/:id/margin` sums cost_events for the
+WP's issueId and returns listPriceCents / productionCostCents /
+marginPerUnitCents / projectedMarginCents (with unitsTargetCount)
+/ breakEvenUnits / breakdowns by provider, agent, model. No
+schema change — listPrice and units live in WP metadata.
+Operators set them per-WP or via template defaultMetadata.
+
+**Board UI run-event stream panel (code only, not
+browser-tested)**: `ui/src/components/RunEventStream.tsx` consumes
+the SSE endpoint via fetch + ReadableStream reader (EventSource
+can't set custom auth headers, and the existing UI uses
+cookie-based auth). The component type-checks cleanly and mirrors
+the CLI tail's logic, but the visual layout was not verified in a
+browser — operators should run `pnpm dev:ui` and eyeball the
+frames before wiring into a route. Not yet mounted anywhere; drop
+into any page via `<RunEventStream runId={...} />`.
+
+Design tradeoffs (batch-level):
+
+- **Secret rotation: no dual-key window.** For single-tenant
+  self-hosted we prefer the simpler verify-then-atomic-swap
+  model. Multi-tenant upgrades can layer dual-key on top by
+  keeping both old and new keys in memory and trying each in
+  sequence at decrypt time.
+- **GitHub provider uses the Contents API, not git push.** One
+  HTTP call per publish, no repo clone, no disk write.
+  Reasonable tradeoff: works perfectly for Markdown-in-repo
+  Jamstack sites; doesn't fit workflows that need full history
+  / force-push / large binary files (use a webhook + CI for
+  those).
+- **Margin: operator-supplied listPrice.** Revenue APIs
+  (Gumroad / Substack sales webhooks → revenue events) are a
+  follow-up; for now listPrice is a static "what we charge per
+  unit" number in WP metadata. Once we ship revenue_events
+  ingestion, actualMarginCents can join the report.
+- **Metrics: collapsed status vocabulary.** Emitting
+  paperclip_heartbeat_runs_total grouped by status means
+  operators can build a simple "% success over time" panel
+  without writing custom aggregation queries. Finer-grained
+  metrics (per-agent, per-adapter-type) are a cheap addition if
+  demand shows up.
+- **UI panel is ungated on mount.** No auth check inside the
+  component — it assumes the cookie-based session is the one
+  enforcing access. Consistent with other pages; do not drop
+  this component into a public surface.
 
 ## What Should Be Done Next
 

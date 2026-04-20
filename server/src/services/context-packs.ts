@@ -244,6 +244,108 @@ export function contextPackService(db: Db) {
         truncated,
       });
     },
+
+    /**
+     * Auto-hydration entry point for agent wake-up. Reads the agent's
+     * `runtimeConfig.contextPackIds` (if any), resolves each pack, and
+     * merges the results into a single resolution. Returns null when
+     * the agent has no context packs configured — so the adapter
+     * context stays lean in the common case.
+     *
+     * Documents are deduplicated by id; later packs do NOT shadow
+     * earlier packs (the first occurrence wins) so the resolution is
+     * stable regardless of pack order. Missing / cross-tenant pack ids
+     * are silently skipped so one stale pack id doesn't break a whole
+     * agent run — a warning is surfaced via `missingPackIds`.
+     */
+    async hydrateForAgent(input: {
+      companyId: string;
+      runtimeConfig: Record<string, unknown> | null | undefined;
+    }): Promise<(ContextPackResolution & { missingPackIds: string[] }) | null> {
+      const raw = input.runtimeConfig?.contextPackIds;
+      if (!Array.isArray(raw)) return null;
+      const packIds = raw.filter((v): v is string => typeof v === "string" && v.length > 0);
+      if (packIds.length === 0) return null;
+
+      const seenDocIds = new Set<string>();
+      const documents: ContextPackResolution["documents"] = [];
+      const rulesApplied: ContextPackRules = {};
+      const addToUnion = (key: keyof ContextPackRules, values: unknown) => {
+        if (!Array.isArray(values)) return;
+        const cur = Array.isArray(rulesApplied[key]) ? (rulesApplied[key] as string[]) : [];
+        const merged = new Set<string>(cur);
+        for (const v of values) {
+          if (typeof v === "string") merged.add(v);
+        }
+        (rulesApplied[key] as string[]) = Array.from(merged);
+      };
+
+      let totalMatched = 0;
+      let truncated = false;
+      const missingPackIds: string[] = [];
+      const resolvedPackNames: string[] = [];
+
+      for (const packId of packIds) {
+        const row = await getRowInCompany(input.companyId, packId);
+        if (!row) {
+          missingPackIds.push(packId);
+          continue;
+        }
+        try {
+          const resolution = await this.resolve(input.companyId, packId, {});
+          resolvedPackNames.push(resolution.name);
+          totalMatched += resolution.totalMatched;
+          if (resolution.truncated) truncated = true;
+          addToUnion("includePaths", resolution.rulesApplied.includePaths);
+          addToUnion("includeTagsAny", resolution.rulesApplied.includeTagsAny);
+          addToUnion("includeKinds", resolution.rulesApplied.includeKinds);
+          if (
+            typeof resolution.rulesApplied.maxDocs === "number" &&
+            (rulesApplied.maxDocs === undefined ||
+              resolution.rulesApplied.maxDocs > rulesApplied.maxDocs)
+          ) {
+            rulesApplied.maxDocs = resolution.rulesApplied.maxDocs;
+          }
+          for (const doc of resolution.documents) {
+            if (seenDocIds.has(doc.id)) continue;
+            seenDocIds.add(doc.id);
+            documents.push(doc);
+          }
+        } catch {
+          // A single pack failing to resolve (e.g. rule validation race)
+          // shouldn't tank the whole run. Fall through and continue.
+          missingPackIds.push(packId);
+        }
+      }
+
+      const merged = buildContextPackResolution({
+        packId: null,
+        name: resolvedPackNames.length === 1 ? resolvedPackNames[0]! : resolvedPackNames.join("+"),
+        projectId: null,
+        rulesApplied,
+        docs: documents.map((doc) => ({
+          id: doc.id,
+          companyId: input.companyId,
+          projectId: null,
+          path: doc.path,
+          title: doc.title,
+          kind: doc.kind,
+          tags: doc.tags,
+          frontmatter: doc.frontmatter,
+          body: doc.body,
+          format: doc.format,
+          createdByAgentId: null,
+          createdByUserId: null,
+          updatedByAgentId: null,
+          updatedByUserId: null,
+          createdAt: doc.updatedAt,
+          updatedAt: doc.updatedAt,
+        })),
+        totalMatched,
+        truncated,
+      });
+      return { ...merged, missingPackIds };
+    },
   };
 }
 

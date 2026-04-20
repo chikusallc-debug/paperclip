@@ -30,6 +30,7 @@ import { costService } from "./costs.js";
 import { trackAgentFirstHeartbeat } from "@paperclipai/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
 import { companySkillService } from "./company-skills.js";
+import { contextPackService } from "./context-packs.js";
 import { budgetService, type BudgetEnforcementScope } from "./budgets.js";
 import { secretService } from "./secrets.js";
 import { resolveDefaultAgentWorkspaceDir, resolveManagedProjectWorkspaceDir } from "../home-paths.js";
@@ -1496,6 +1497,7 @@ export function heartbeatService(db: Db) {
   const runLogStore = getRunLogStore();
   const secretsSvc = secretService(db);
   const companySkills = companySkillService(db);
+  const contextPacks = contextPackService(db);
   const issuesSvc = issueService(db);
   const executionWorkspacesSvc = executionWorkspaceService(db);
   const workspaceOperationsSvc = workspaceOperationService(db);
@@ -3851,6 +3853,44 @@ export function heartbeatService(db: Db) {
           payload: meta as unknown as Record<string, unknown>,
         });
       };
+
+      // Auto-hydrate context packs declared on the agent's runtime
+      // config so writers see deterministic canon without an explicit
+      // /context-packs/:id/resolve call inside each run. Surfaces as
+      // PAPERCLIP_CONTEXT_PACK_JSON via buildPaperclipEnv.
+      try {
+        const hydration = await contextPacks.hydrateForAgent({
+          companyId: agent.companyId,
+          runtimeConfig: agent.runtimeConfig as Record<string, unknown> | null | undefined,
+        });
+        if (hydration) {
+          context.paperclipContextPack = hydration;
+          await appendRunEvent(currentRun, seq++, {
+            eventType: "context_pack.hydrated",
+            stream: "system",
+            level: hydration.missingPackIds.length > 0 ? "warn" : "info",
+            message: `hydrated ${hydration.documents.length} doc(s) from context pack(s)`,
+            payload: {
+              name: hydration.name,
+              totalMatched: hydration.totalMatched,
+              truncated: hydration.truncated,
+              documentCount: hydration.documents.length,
+              missingPackIds: hydration.missingPackIds,
+            },
+          });
+        }
+      } catch (err) {
+        // Hydration failure must not tank the run — fall through and
+        // let the agent proceed without pack injection.
+        logger.warn(
+          {
+            agentId: agent.id,
+            runId: run.id,
+            err,
+          },
+          "context-pack hydration failed; continuing without PAPERCLIP_CONTEXT_PACK_JSON",
+        );
+      }
 
       const adapter = getServerAdapter(agent.adapterType);
       const authToken = adapter.supportsLocalAgentJwt

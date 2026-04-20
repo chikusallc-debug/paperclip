@@ -535,7 +535,10 @@ export function buildInvocationEnvForLogs(
   return redactEnvForLogs(merged);
 }
 
-export function buildPaperclipEnv(agent: { id: string; companyId: string }): Record<string, string> {
+export function buildPaperclipEnv(
+  agent: { id: string; companyId: string },
+  context?: Record<string, unknown> | null,
+): Record<string, string> {
   const resolveHostForUrl = (rawHost: string): string => {
     const host = rawHost.trim();
     if (!host || host === "0.0.0.0" || host === "::") return "localhost";
@@ -552,6 +555,23 @@ export function buildPaperclipEnv(agent: { id: string; companyId: string }): Rec
   const runtimePort = process.env.PAPERCLIP_LISTEN_PORT ?? process.env.PORT ?? "3100";
   const apiUrl = process.env.PAPERCLIP_API_URL ?? `http://${runtimeHost}:${runtimePort}`;
   vars.PAPERCLIP_API_URL = apiUrl;
+
+  // Context-pack auto-hydration: when the server resolved a pack for
+  // this run (via agent.runtimeConfig.contextPackIds), the merged
+  // pack object is inlined into the adapter context as
+  // `paperclipContextPack`. Surface it as PAPERCLIP_CONTEXT_PACK_JSON
+  // so every adapter picks it up via one call site with no
+  // per-adapter code change beyond passing context through.
+  if (context && typeof context === "object") {
+    const pack = (context as { paperclipContextPack?: unknown }).paperclipContextPack;
+    if (pack && typeof pack === "object") {
+      try {
+        vars.PAPERCLIP_CONTEXT_PACK_JSON = JSON.stringify(pack);
+      } catch {
+        // leave unset if pack is not serializable (cyclic etc.)
+      }
+    }
+  }
   return vars;
 }
 

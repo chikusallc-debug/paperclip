@@ -10,6 +10,7 @@ import { validate } from "../middleware/validate.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import {
   bibleUpdateService,
+  contentMarginService,
   contentWorkProductService,
   logActivity,
   type ListContentWorkProductsFilters,
@@ -328,6 +329,23 @@ export function contentWorkProductRoutes(db: Db) {
       },
     });
     res.status(200).json(applied);
+  });
+
+  // Margin report. Reads-only. Computes list price (from metadata),
+  // summed production cost (cost_events for the WP's issueId), and a
+  // breakdown by provider / agent / model so the UI / CLI can show
+  // "where did the money go".
+  router.get("/content-work-products/:id/margin", async (req, res) => {
+    const id = req.params.id as string;
+    const companyId = await resolveCompanyId(db, id);
+    if (!companyId) {
+      res.status(404).json({ error: "Content work product not found" });
+      return;
+    }
+    assertCompanyAccess(req, companyId);
+    const margin = contentMarginService(db);
+    const report = await margin.computeMargin(companyId, id);
+    res.json(report);
   });
 
   // Pass-criteria dry-run. Safe to call repeatedly — no side effects.

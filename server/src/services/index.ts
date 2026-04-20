@@ -53,6 +53,12 @@ export {
   type AppliedBibleUpdate,
 } from "./bible-updates.js";
 export {
+  contentMarginService,
+  type ContentMarginService,
+  type MarginReport,
+  type MarginBreakdownRow,
+} from "./content-margin.js";
+export {
   contentTemplateService,
   interpolateTemplate,
   type ContentTemplateService,

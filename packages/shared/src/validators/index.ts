@@ -207,6 +207,16 @@ export {
 } from "./knowledge-base.js";
 
 export {
+  createContentTemplateSchema,
+  updateContentTemplateSchema,
+  instantiateContentTemplateSchema,
+  contentTemplateNameSchema,
+  type CreateContentTemplateInput,
+  type UpdateContentTemplateInput,
+  type InstantiateContentTemplateInput,
+} from "./content-template.js";
+
+export {
   executionWorkspaceConfigSchema,
   updateExecutionWorkspaceSchema,
   executionWorkspaceStatusSchema,

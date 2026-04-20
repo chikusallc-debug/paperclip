@@ -117,6 +117,7 @@ export type {
   ContextPackResolution,
   ResolvedContextPackDocument,
 } from "./knowledge-base.js";
+export type { ContentTemplate } from "./content-template.js";
 export type {
   Issue,
   IssueAssigneeAdapterOverrides,

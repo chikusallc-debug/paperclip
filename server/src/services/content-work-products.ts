@@ -4,6 +4,12 @@ import {
   contentWorkProducts,
   contentWorkProductVersions,
 } from "@paperclipai/db";
+import {
+  evaluatePassCriteria,
+  hasPassCriteria,
+  isGatedTransition,
+  type PassCriteriaResult,
+} from "@paperclipai/shared";
 import type {
   ContentWorkProduct,
   ContentWorkProductVersion,
@@ -14,7 +20,7 @@ import type {
   PublishContentWorkProductInput,
   UpdateContentWorkProductInput,
 } from "@paperclipai/shared";
-import { conflict, notFound, unprocessable } from "../errors.js";
+import { conflict, HttpError, notFound, unprocessable } from "../errors.js";
 
 type ContentWorkProductRow = typeof contentWorkProducts.$inferSelect;
 type ContentWorkProductVersionRow = typeof contentWorkProductVersions.$inferSelect;
@@ -23,6 +29,56 @@ interface ActorContext {
   userId: string | null;
   agentId: string | null;
   runId?: string | null;
+}
+
+export interface PassCriteriaEnforcementOptions {
+  /**
+   * Board override. When true, the gate is bypassed even if the work
+   * product has unmet pass criteria. The route layer should only honor
+   * this for board actors; agents must never bypass their own content
+   * rules.
+   */
+  bypass?: boolean;
+}
+
+/**
+ * 422 thrown when a status transition is blocked by failing pass
+ * criteria. Extends HttpError so the existing error handler renders
+ * it with `{ error, details: { code, failures, stats, targetStatus } }`.
+ */
+export class PassCriteriaError extends HttpError {
+  readonly code = "pass_criteria_failed";
+  readonly failures: PassCriteriaResult["failures"];
+  readonly stats: PassCriteriaResult["stats"];
+  readonly targetStatus: string;
+
+  constructor(result: PassCriteriaResult, targetStatus: string) {
+    const message = `Content work product cannot advance to "${targetStatus}": ${result.failures
+      .map((f) => f.message)
+      .join("; ")}`;
+    super(422, message, {
+      code: "pass_criteria_failed",
+      targetStatus,
+      failures: result.failures,
+      stats: result.stats,
+    });
+    this.name = "PassCriteriaError";
+    this.failures = result.failures;
+    this.stats = result.stats;
+    this.targetStatus = targetStatus;
+  }
+}
+
+/**
+ * Returns the pass-criteria rules stored on a work product row (under
+ * `metadata.passCriteria`). Returns null when no criteria are defined,
+ * which lets enforcement short-circuit without touching the body.
+ */
+function readPassCriteria(metadata: unknown): Record<string, unknown> | null {
+  if (!metadata || typeof metadata !== "object") return null;
+  const raw = (metadata as { passCriteria?: unknown }).passCriteria;
+  if (!raw || typeof raw !== "object") return null;
+  return raw as Record<string, unknown>;
 }
 
 function toWorkProduct(row: ContentWorkProductRow): ContentWorkProduct {
@@ -276,6 +332,7 @@ export function contentWorkProductService(db: Db) {
       id: string,
       patch: UpdateContentWorkProductInput,
       actor: ActorContext,
+      gate: PassCriteriaEnforcementOptions = {},
     ): Promise<ContentWorkProduct> {
       return db.transaction(async (tx) => {
         const rows = await tx
@@ -286,6 +343,36 @@ export function contentWorkProductService(db: Db) {
           );
         const existing = rows[0];
         if (!existing) throw notFound("Content work product not found");
+
+        // Pass-criteria gate: a PATCH can move status forward (e.g. a
+        // tool marks a work product in_review after a long session).
+        // Evaluate against the *latest* stored body + the incoming tag
+        // set, since PATCH does not accept a new body.
+        if (!gate.bypass && patch.status && patch.status !== existing.status) {
+          const criteria = readPassCriteria(
+            patch.metadata ?? (existing.metadata as Record<string, unknown> | null),
+          );
+          if (
+            criteria &&
+            hasPassCriteria(criteria) &&
+            isGatedTransition(existing.status, patch.status)
+          ) {
+            // Load latest body (if any) — a work product with no
+            // versions cannot clear any body-based criterion, so we
+            // short-circuit to a useful failure.
+            let body = "";
+            if (existing.latestVersionId) {
+              const versionRows = await tx
+                .select({ body: contentWorkProductVersions.body })
+                .from(contentWorkProductVersions)
+                .where(eq(contentWorkProductVersions.id, existing.latestVersionId));
+              body = versionRows[0]?.body ?? "";
+            }
+            const tags = patch.tags ?? ((existing.tags as string[] | null) ?? []);
+            const result = evaluatePassCriteria({ body, tags, criteria });
+            if (!result.passed) throw new PassCriteriaError(result, patch.status);
+          }
+        }
 
         const nextProjectId = patch.projectId === undefined ? existing.projectId : patch.projectId;
         const nextSlug = patch.slug === undefined ? existing.slug : patch.slug;
@@ -375,6 +462,7 @@ export function contentWorkProductService(db: Db) {
       workProductId: string,
       input: CreateContentWorkProductVersionInput,
       actor: ActorContext,
+      gate: PassCriteriaEnforcementOptions = {},
     ): Promise<ContentWorkProductVersion> {
       return db.transaction(async (tx) => {
         const rows = await tx
@@ -407,6 +495,28 @@ export function contentWorkProductService(db: Db) {
         const nextVersionNumber = wp.latestVersionNumber + 1;
         const now = new Date();
         const nextStatus = input.advanceStatusTo ?? wp.status;
+
+        // Pass-criteria gate: when this version is advancing the work
+        // product into a gated state, evaluate criteria against the
+        // *incoming* body + current tags. Criteria live in the work
+        // product's metadata.passCriteria (usually copied there from a
+        // template at instantiate time). Board callers may bypass
+        // explicitly; agents cannot.
+        if (!gate.bypass) {
+          const criteria = readPassCriteria(wp.metadata);
+          if (
+            criteria &&
+            hasPassCriteria(criteria) &&
+            isGatedTransition(wp.status, nextStatus)
+          ) {
+            const result = evaluatePassCriteria({
+              body: input.body,
+              tags: (wp.tags as string[] | null) ?? [],
+              criteria,
+            });
+            if (!result.passed) throw new PassCriteriaError(result, nextStatus);
+          }
+        }
 
         const [versionRow] = await tx
           .insert(contentWorkProductVersions)
@@ -449,6 +559,7 @@ export function contentWorkProductService(db: Db) {
       workProductId: string,
       input: PublishContentWorkProductInput,
       actor: ActorContext,
+      gate: PassCriteriaEnforcementOptions = {},
     ): Promise<ContentWorkProduct> {
       return db.transaction(async (tx) => {
         const rows = await tx
@@ -480,6 +591,26 @@ export function contentWorkProductService(db: Db) {
         const version = versionRows[0];
         if (!version) throw notFound("Version not found");
 
+        // Pass-criteria gate: publish is the most consequential
+        // transition (external egress follows). Evaluate against the
+        // SELECTED version's body — an operator can publish an older
+        // passing version even after drafting a later non-passing one.
+        if (!gate.bypass) {
+          const criteria = readPassCriteria(wp.metadata);
+          if (
+            criteria &&
+            hasPassCriteria(criteria) &&
+            isGatedTransition(wp.status, "published")
+          ) {
+            const result = evaluatePassCriteria({
+              body: version.body,
+              tags: (wp.tags as string[] | null) ?? [],
+              criteria,
+            });
+            if (!result.passed) throw new PassCriteriaError(result, "published");
+          }
+        }
+
         const [updated] = await tx
           .update(contentWorkProducts)
           .set({
@@ -494,6 +625,63 @@ export function contentWorkProductService(db: Db) {
         if (!updated) throw unprocessable("Failed to publish content work product");
         return toWorkProduct(updated);
       });
+    },
+
+    /**
+     * Evaluate the work product's pass-criteria (if any) against its
+     * current latest body + tags. Does not mutate. Useful for:
+     *
+     *   - Agents: dry-run before attempting a status transition.
+     *   - Operators: see at a glance which chapters are ready to
+     *     advance and which are stuck.
+     *
+     * Returns `null` when the work product has no criteria configured —
+     * callers treat "no criteria" as "unconstrained".
+     */
+    async evaluateCriteria(
+      companyId: string,
+      workProductId: string,
+    ): Promise<{
+      hasCriteria: boolean;
+      criteria: Record<string, unknown>;
+      result: PassCriteriaResult | null;
+      evaluatedAgainstVersionNumber: number | null;
+    }> {
+      const row = await getByIdWithinCompany(companyId, workProductId);
+      if (!row) throw notFound("Content work product not found");
+      const criteria = readPassCriteria(row.metadata);
+      if (!criteria || !hasPassCriteria(criteria)) {
+        return {
+          hasCriteria: false,
+          criteria: criteria ?? {},
+          result: null,
+          evaluatedAgainstVersionNumber: null,
+        };
+      }
+      let body = "";
+      let versionNumber: number | null = null;
+      if (row.latestVersionId) {
+        const versionRows = await db
+          .select({
+            body: contentWorkProductVersions.body,
+            versionNumber: contentWorkProductVersions.versionNumber,
+          })
+          .from(contentWorkProductVersions)
+          .where(eq(contentWorkProductVersions.id, row.latestVersionId));
+        body = versionRows[0]?.body ?? "";
+        versionNumber = versionRows[0]?.versionNumber ?? null;
+      }
+      const result = evaluatePassCriteria({
+        body,
+        tags: (row.tags as string[] | null) ?? [],
+        criteria,
+      });
+      return {
+        hasCriteria: true,
+        criteria,
+        result,
+        evaluatedAgainstVersionNumber: versionNumber,
+      };
     },
   };
 }

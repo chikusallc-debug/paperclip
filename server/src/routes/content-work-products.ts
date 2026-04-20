@@ -14,6 +14,19 @@ import {
   type ListContentWorkProductsFilters,
 } from "../services/index.js";
 
+/**
+ * Pass-criteria bypass is board-only. Agents must never bypass their
+ * own content rules; the factory relies on them being enforced to
+ * prevent an autonomous run from shipping junk. We surface this as a
+ * query param (`?bypass=true`) so it's explicit in the audit log URL.
+ */
+function resolveGateBypass(req: import("express").Request): { bypass: boolean } {
+  const raw = typeof req.query.bypass === "string" ? req.query.bypass : null;
+  if (raw !== "true") return { bypass: false };
+  if (req.actor?.type !== "board") return { bypass: false };
+  return { bypass: true };
+}
+
 function parseFilters(query: Record<string, unknown>): ListContentWorkProductsFilters {
   const filters: ListContentWorkProductsFilters = {};
   if (typeof query.projectId === "string") {
@@ -106,10 +119,17 @@ export function contentWorkProductRoutes(db: Db) {
       assertCompanyAccess(req, companyId);
       const actor = getActorInfo(req);
 
-      const updated = await svc.update(companyId, id, req.body, {
-        userId: actor.actorType === "user" ? actor.actorId : null,
-        agentId: actor.agentId,
-      });
+      const gate = resolveGateBypass(req);
+      const updated = await svc.update(
+        companyId,
+        id,
+        req.body,
+        {
+          userId: actor.actorType === "user" ? actor.actorId : null,
+          agentId: actor.agentId,
+        },
+        gate,
+      );
 
       await logActivity(db, {
         companyId,
@@ -118,7 +138,7 @@ export function contentWorkProductRoutes(db: Db) {
         action: "content_work_product.updated",
         entityType: "content_work_product",
         entityId: updated.id,
-        details: { patch: req.body },
+        details: { patch: req.body, gateBypass: gate.bypass || undefined },
       });
 
       res.json(updated);
@@ -175,11 +195,18 @@ export function contentWorkProductRoutes(db: Db) {
       assertCompanyAccess(req, companyId);
       const actor = getActorInfo(req);
 
-      const version = await svc.addVersion(companyId, id, req.body, {
-        userId: actor.actorType === "user" ? actor.actorId : null,
-        agentId: actor.agentId,
-        runId: actor.runId,
-      });
+      const gate = resolveGateBypass(req);
+      const version = await svc.addVersion(
+        companyId,
+        id,
+        req.body,
+        {
+          userId: actor.actorType === "user" ? actor.actorId : null,
+          agentId: actor.agentId,
+          runId: actor.runId,
+        },
+        gate,
+      );
 
       await logActivity(db, {
         companyId,
@@ -192,6 +219,7 @@ export function contentWorkProductRoutes(db: Db) {
           versionNumber: version.versionNumber,
           changeSummary: version.changeSummary,
           advancedStatusTo: req.body.advanceStatusTo ?? null,
+          gateBypass: gate.bypass || undefined,
         },
       });
 
@@ -232,10 +260,17 @@ export function contentWorkProductRoutes(db: Db) {
       assertCompanyAccess(req, companyId);
       const actor = getActorInfo(req);
 
-      const updated = await svc.publish(companyId, id, req.body ?? {}, {
-        userId: actor.actorType === "user" ? actor.actorId : null,
-        agentId: actor.agentId,
-      });
+      const gate = resolveGateBypass(req);
+      const updated = await svc.publish(
+        companyId,
+        id,
+        req.body ?? {},
+        {
+          userId: actor.actorType === "user" ? actor.actorId : null,
+          agentId: actor.agentId,
+        },
+        gate,
+      );
 
       await logActivity(db, {
         companyId,
@@ -247,12 +282,30 @@ export function contentWorkProductRoutes(db: Db) {
         details: {
           publishedVersionId: updated.publishedVersionId,
           requestedVersionNumber: req.body?.versionNumber ?? null,
+          gateBypass: gate.bypass || undefined,
         },
       });
 
       res.json(updated);
     },
   );
+
+  // Pass-criteria dry-run. Safe to call repeatedly — no side effects.
+  // Returns the current latest-version evaluation so agents and
+  // operators can see exactly which rules are blocking advancement
+  // (and the underlying stats like wordcount) before requesting a
+  // status transition.
+  router.get("/content-work-products/:id/pass-criteria", async (req, res) => {
+    const id = req.params.id as string;
+    const companyId = await resolveCompanyId(db, id);
+    if (!companyId) {
+      res.status(404).json({ error: "Content work product not found" });
+      return;
+    }
+    assertCompanyAccess(req, companyId);
+    const evaluation = await svc.evaluateCriteria(companyId, id);
+    res.json(evaluation);
+  });
 
   return router;
 }

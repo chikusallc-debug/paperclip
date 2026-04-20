@@ -207,4 +207,114 @@ describeEmbeddedPostgres("contextPackService.hydrateForAgent", () => {
     expect(hydration!.documents.length).toBe(0);
     expect(hydration!.missingPackIds).toEqual([packA.id]);
   });
+
+  describe("additionalPackIds (per-work-product hydration)", () => {
+    it("hydrates additionalPackIds even when the agent has none configured", async () => {
+      const { companyId, projectId, agentId } = await seed();
+      const kb = knowledgeBaseService(db);
+      const packs = contextPackService(db);
+
+      await kb.create(
+        companyId,
+        { projectId, path: "characters/elena.md", title: "E", kind: "character", body: "E" },
+        { userId: null, agentId },
+      );
+      const pack = await packs.create(
+        companyId,
+        { projectId, name: "wp-only", rules: { includeKinds: ["character"] } },
+        { userId: null, agentId },
+      );
+      const hydration = await packs.hydrateForAgent({
+        companyId,
+        runtimeConfig: null,
+        additionalPackIds: [pack.id],
+      });
+      expect(hydration).not.toBeNull();
+      expect(hydration!.documents.length).toBe(1);
+      expect(hydration!.name).toBe("wp-only");
+    });
+
+    it("unions agent packs and additionalPackIds with dedup", async () => {
+      const { companyId, projectId, agentId } = await seed();
+      const kb = knowledgeBaseService(db);
+      const packs = contextPackService(db);
+
+      await kb.create(
+        companyId,
+        { projectId, path: "characters/elena.md", title: "E", kind: "character", body: "E" },
+        { userId: null, agentId },
+      );
+      await kb.create(
+        companyId,
+        { projectId, path: "style-guide/tone.md", title: "T", kind: "style_guide", body: "T" },
+        { userId: null, agentId },
+      );
+      const agentPack = await packs.create(
+        companyId,
+        { projectId, name: "agent-pack", rules: { includeKinds: ["character"] } },
+        { userId: null, agentId },
+      );
+      const wpPack = await packs.create(
+        companyId,
+        { projectId, name: "wp-pack", rules: { includeKinds: ["style_guide"] } },
+        { userId: null, agentId },
+      );
+      const hydration = await packs.hydrateForAgent({
+        companyId,
+        runtimeConfig: { contextPackIds: [agentPack.id] },
+        additionalPackIds: [wpPack.id],
+      });
+      expect(hydration).not.toBeNull();
+      const paths = hydration!.documents.map((d) => d.path).sort();
+      expect(paths).toEqual(["characters/elena.md", "style-guide/tone.md"]);
+    });
+
+    it("dedups when the same pack id appears in both agent and WP lists", async () => {
+      const { companyId, projectId, agentId } = await seed();
+      const kb = knowledgeBaseService(db);
+      const packs = contextPackService(db);
+      await kb.create(
+        companyId,
+        { projectId, path: "characters/elena.md", title: "E", kind: "character", body: "E" },
+        { userId: null, agentId },
+      );
+      const shared = await packs.create(
+        companyId,
+        { projectId, name: "shared", rules: { includeKinds: ["character"] } },
+        { userId: null, agentId },
+      );
+      const hydration = await packs.hydrateForAgent({
+        companyId,
+        runtimeConfig: { contextPackIds: [shared.id] },
+        additionalPackIds: [shared.id],
+      });
+      expect(hydration).not.toBeNull();
+      // One doc, not two — pack was resolved once.
+      expect(hydration!.documents.length).toBe(1);
+      // And the compose name is singular, not "shared+shared".
+      expect(hydration!.name).toBe("shared");
+    });
+
+    it("cross-tenant additionalPackIds are treated as missing (no leak)", async () => {
+      const a = await seed();
+      const b = await seed();
+      const packsA = contextPackService(db);
+      const packsB = contextPackService(db);
+      const packA = await packsA.create(
+        a.companyId,
+        { projectId: a.projectId, name: "leak", rules: { includeKinds: ["character"] } },
+        { userId: null, agentId: a.agentId },
+      );
+      // A Company-B agent wake with Company-A's pack in the
+      // additional list must not leak docs.
+      const hydration = await packsB.hydrateForAgent({
+        companyId: b.companyId,
+        runtimeConfig: null,
+        additionalPackIds: [packA.id],
+      });
+      expect(hydration).not.toBeNull();
+      expect(hydration!.documents.length).toBe(0);
+      expect(hydration!.missingPackIds).toEqual([packA.id]);
+    });
+  });
 });

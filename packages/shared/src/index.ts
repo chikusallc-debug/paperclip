@@ -752,6 +752,16 @@ export {
 } from "./validators/index.js";
 
 export { API_PREFIX, API } from "./api.js";
+export {
+  evaluatePassCriteria,
+  isGatedTransition,
+  hasPassCriteria,
+  GATED_TRANSITION_TARGETS,
+  type PassCriteriaFailure,
+  type PassCriteriaFailureCode,
+  type PassCriteriaResult,
+  type PassCriteriaInput,
+} from "./content-pass-criteria.js";
 export { normalizeAgentUrlKey, deriveAgentUrlKey, isUuidLike } from "./agent-url-key.js";
 export { deriveProjectUrlKey, normalizeProjectUrlKey, hasNonAsciiContent } from "./project-url-key.js";
 export {
